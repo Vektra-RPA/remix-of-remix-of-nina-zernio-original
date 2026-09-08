@@ -261,7 +261,7 @@ serve(async (request) => {
     }
     // Criar e excluir mudam o canal oficial da conta na Meta — só admin.
     if (action !== 'list' && !access.isAdmin) {
-      return json(403, { error: 'Apenas administradores podem criar ou excluir templates.', code: 'admin_required' });
+      return json(403, { error: 'Apenas administradores podem criar, editar ou excluir templates.', code: 'admin_required' });
     }
 
     if (access.workspaceId) {
