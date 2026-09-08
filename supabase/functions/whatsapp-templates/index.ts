@@ -243,7 +243,7 @@ serve(async (request) => {
 
     const body = await request.json();
     const action = typeof body.action === 'string' ? body.action : '';
-    if (!['list', 'create', 'delete'].includes(action)) {
+    if (!['list', 'create', 'update', 'delete'].includes(action)) {
       return json(400, { error: 'Ação inválida.', code: 'invalid_action' });
     }
 
