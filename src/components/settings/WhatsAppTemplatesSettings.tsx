@@ -366,9 +366,10 @@ export default function WhatsAppTemplatesSettings() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setDialogOpen(false)} disabled={saving}>Cancelar</Button>
-            <Button variant="primary" onClick={() => void handleCreate()} disabled={saving || issues.length > 0}>
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              {saving ? 'Enviando…' : 'Enviar para aprovação'}
+            <Button variant="primary" onClick={() => void handleSave()} disabled={saving || issues.length > 0}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : editing ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {saving ? 'Enviando…' : editing ? 'Salvar e reenviar' : 'Enviar para aprovação'}
+
             </Button>
           </DialogFooter>
         </DialogContent>
