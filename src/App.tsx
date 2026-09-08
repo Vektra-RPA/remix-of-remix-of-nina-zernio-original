@@ -10,7 +10,9 @@ import Scheduling from './components/Scheduling';
 import Kanban from './components/Kanban';
 import Help from './components/Help';
 import SystemRoadmap from './components/SystemRoadmap';
+import Dispatch from './pages/Dispatch';
 import Auth from './pages/Auth';
+
 import ProtectedRoute from './components/ProtectedRoute';
 
 import { CompanySettingsProvider, useCompanySettings } from './hooks/useCompanySettings';
