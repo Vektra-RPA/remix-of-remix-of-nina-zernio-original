@@ -354,7 +354,35 @@ serve(async (request) => {
       });
     }
 
+    if (action === 'update') {
+      const templateId = String(body.id ?? '').trim();
+      if (!/^\d+$/.test(templateId)) {
+        return json(400, { error: 'Template sem identificador na Meta — atualize a lista e tente de novo.', code: 'invalid_template_id' });
+      }
+      const draft = draftFromBody(body);
+      const issues = validateTemplateDraft(draft);
+      if (issues.length > 0) {
+        return json(400, { error: issues[0].message, code: 'invalid_template', issues });
+      }
+      const response = await fetch(`${GRAPH_API_URL}/${templateId}`, {
+        method: 'POST',
+        headers: graphHeaders,
+        body: JSON.stringify(buildUpdatePayload(draft)),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        console.error('[whatsapp-templates] update error', response.status, JSON.stringify(data).slice(0, 500));
+        return json(422, {
+          error: metaErrorMessage(data, 'A Meta recusou a edição do template.'),
+          code: 'meta_update_failed',
+        });
+      }
+      return json(200, { success: true });
+    }
+
     // action === 'delete'
+
     const name = String(body.name ?? '').trim();
     if (!/^[a-z0-9_]+$/.test(name)) {
       return json(400, { error: 'Nome de template inválido.', code: 'invalid_template_name' });
