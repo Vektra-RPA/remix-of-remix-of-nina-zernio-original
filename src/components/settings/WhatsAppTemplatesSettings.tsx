@@ -129,27 +129,50 @@ export default function WhatsAppTemplatesSettings() {
   );
 
   const openCreate = () => {
+    setEditing(null);
     setDraft(emptyDraft);
     setDialogOpen(true);
   };
 
-  const handleCreate = async () => {
+  /** A Meta não devolve os exemplos das variáveis na listagem: eles voltam vazios
+      e precisam ser informados de novo para a reanálise. */
+  const openEdit = (template: MetaTemplate) => {
+    setEditing(template);
+    setDraft({
+      name: template.name,
+      category: template.category === 'MARKETING' ? 'MARKETING' : 'UTILITY',
+      language: template.language,
+      headerText: template.headerText ?? '',
+      bodyText: template.bodyText ?? '',
+      footerText: template.footerText ?? '',
+      exampleValues: [],
+    });
+    setDialogOpen(true);
+  };
+
+  const handleSave = async () => {
     if (issues.length > 0) {
       toast.error(issues[0].message);
       return;
     }
     setSaving(true);
     try {
-      const created = await whatsappTemplatesApi.create(effectiveDraft);
-      toast.success(`Template “${created.name}” enviado para análise da Meta.`);
+      if (editing) {
+        await whatsappTemplatesApi.update(editing.id, effectiveDraft);
+        toast.success(`Template “${editing.name}” atualizado e reenviado para análise da Meta.`);
+      } else {
+        const created = await whatsappTemplatesApi.create(effectiveDraft);
+        toast.success(`Template “${created.name}” enviado para análise da Meta.`);
+      }
       setDialogOpen(false);
       await load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Não foi possível criar o template.');
+      toast.error(error instanceof Error ? error.message : 'Não foi possível salvar o template.');
     } finally {
       setSaving(false);
     }
   };
+
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
