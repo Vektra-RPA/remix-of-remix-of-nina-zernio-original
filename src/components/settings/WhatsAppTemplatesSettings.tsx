@@ -81,6 +81,8 @@ export default function WhatsAppTemplatesSettings() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MetaTemplate | null>(null);
   const [sendTarget, setSendTarget] = useState<MetaTemplate | null>(null);
+  const [editing, setEditing] = useState<MetaTemplate | null>(null);
+
   // O nome sobrevive ao fechamento do dialog para o título não piscar vazio
   // durante a animação de saída.
   const [deleteName, setDeleteName] = useState('');
