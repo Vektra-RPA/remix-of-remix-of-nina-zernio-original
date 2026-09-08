@@ -5,11 +5,31 @@ import { resolveNinaWhatsAppRow } from '../_shared/whatsapp-credentials.ts';
 import { getUserFromToken } from '../_shared/auth.ts';
 import {
   buildCreatePayload,
+  buildUpdatePayload,
   parseMetaTemplate,
   validateTemplateDraft,
   TEMPLATE_CATEGORIES,
   type TemplateDraft,
 } from '../_shared/whatsapp-templates.ts';
+
+/** Rascunho saneado a partir do corpo da requisição (criação e edição). */
+function draftFromBody(body: Record<string, unknown>): TemplateDraft {
+  const raw = body.template && typeof body.template === 'object' ? body.template as Record<string, unknown> : {};
+  return {
+    name: String(raw.name ?? '').trim().toLowerCase(),
+    category: (TEMPLATE_CATEGORIES as readonly string[]).includes(String(raw.category))
+      ? String(raw.category) as TemplateDraft['category']
+      : 'UTILITY',
+    language: String(raw.language ?? 'pt_BR'),
+    headerText: raw.headerText ? String(raw.headerText).slice(0, 200) : undefined,
+    bodyText: String(raw.bodyText ?? '').slice(0, 2_000),
+    footerText: raw.footerText ? String(raw.footerText).slice(0, 200) : undefined,
+    exampleValues: Array.isArray(raw.exampleValues)
+      ? raw.exampleValues.map((value) => String(value).slice(0, 500)).slice(0, 20)
+      : [],
+  };
+}
+
 
 const GRAPH_API_URL = 'https://graph.facebook.com/v18.0';
 
@@ -174,7 +194,28 @@ async function handleViaZernio(
     });
   }
 
+  if (action === 'update') {
+    const draft = draftFromBody(body);
+    const issues = validateTemplateDraft(draft);
+    if (issues.length > 0) {
+      return json(400, { error: issues[0].message, code: 'invalid_template', issues });
+    }
+    const result = await zernioFetch(context, `/whatsapp/templates/${encodeURIComponent(draft.name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...buildUpdatePayload(draft), accountId: context.accountId }),
+    });
+    if (!result.ok) {
+      console.error('[whatsapp-templates] zernio update error', result.status, JSON.stringify(result.data).slice(0, 500));
+      return json(422, {
+        error: String(result.data?.error ?? 'Não foi possível editar o template pela Zernio.'),
+        code: 'zernio_update_failed',
+      });
+    }
+    return json(200, { success: true, provider: 'zernio' });
+  }
+
   const name = String(body.name ?? '').trim();
+
   if (!/^[a-z0-9_]+$/.test(name)) {
     return json(400, { error: 'Nome de template inválido.', code: 'invalid_template_name' });
   }
@@ -222,7 +263,7 @@ serve(async (request) => {
 
     const body = await request.json();
     const action = typeof body.action === 'string' ? body.action : '';
-    if (!['list', 'create', 'delete'].includes(action)) {
+    if (!['list', 'create', 'update', 'delete'].includes(action)) {
       return json(400, { error: 'Ação inválida.', code: 'invalid_action' });
     }
 
@@ -240,7 +281,7 @@ serve(async (request) => {
     }
     // Criar e excluir mudam o canal oficial da conta na Meta — só admin.
     if (action !== 'list' && !access.isAdmin) {
-      return json(403, { error: 'Apenas administradores podem criar ou excluir templates.', code: 'admin_required' });
+      return json(403, { error: 'Apenas administradores podem criar, editar ou excluir templates.', code: 'admin_required' });
     }
 
     if (access.workspaceId) {
@@ -354,7 +395,35 @@ serve(async (request) => {
       });
     }
 
+    if (action === 'update') {
+      const templateId = String(body.id ?? '').trim();
+      if (!/^\d+$/.test(templateId)) {
+        return json(400, { error: 'Template sem identificador na Meta — atualize a lista e tente de novo.', code: 'invalid_template_id' });
+      }
+      const draft = draftFromBody(body);
+      const issues = validateTemplateDraft(draft);
+      if (issues.length > 0) {
+        return json(400, { error: issues[0].message, code: 'invalid_template', issues });
+      }
+      const response = await fetch(`${GRAPH_API_URL}/${templateId}`, {
+        method: 'POST',
+        headers: graphHeaders,
+        body: JSON.stringify(buildUpdatePayload(draft)),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        console.error('[whatsapp-templates] update error', response.status, JSON.stringify(data).slice(0, 500));
+        return json(422, {
+          error: metaErrorMessage(data, 'A Meta recusou a edição do template.'),
+          code: 'meta_update_failed',
+        });
+      }
+      return json(200, { success: true });
+    }
+
     // action === 'delete'
+
     const name = String(body.name ?? '').trim();
     if (!/^[a-z0-9_]+$/.test(name)) {
       return json(400, { error: 'Nome de template inválido.', code: 'invalid_template_name' });

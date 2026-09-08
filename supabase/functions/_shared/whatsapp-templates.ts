@@ -203,6 +203,17 @@ export function buildCreatePayload(draft: TemplateDraft): Record<string, unknown
   };
 }
 
+/**
+ * Corpo da requisição de edição na Graph API (POST /{template-id}).
+ * Nome e idioma são imutáveis na Meta: só componentes e categoria viajam.
+ */
+export function buildUpdatePayload(draft: TemplateDraft): Record<string, unknown> {
+  const { components } = buildCreatePayload(draft) as { components: unknown };
+  return { category: draft.category, components };
+}
+
+
+
 /** Objeto `template` do payload de envio (POST /{phone-id}/messages, type=template). */
 export function buildSendPayload(spec: TemplateSendSpec): Record<string, unknown> {
   return {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FileCheck2, Loader2, Lock, Plus, RefreshCw, Send, Trash2 } from 'lucide-react';
+import { FileCheck2, Loader2, Lock, Pencil, Plus, RefreshCw, Send, Trash2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -81,6 +81,8 @@ export default function WhatsAppTemplatesSettings() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MetaTemplate | null>(null);
   const [sendTarget, setSendTarget] = useState<MetaTemplate | null>(null);
+  const [editing, setEditing] = useState<MetaTemplate | null>(null);
+
   // O nome sobrevive ao fechamento do dialog para o título não piscar vazio
   // durante a animação de saída.
   const [deleteName, setDeleteName] = useState('');
@@ -129,27 +131,50 @@ export default function WhatsAppTemplatesSettings() {
   );
 
   const openCreate = () => {
+    setEditing(null);
     setDraft(emptyDraft);
     setDialogOpen(true);
   };
 
-  const handleCreate = async () => {
+  /** A Meta não devolve os exemplos das variáveis na listagem: eles voltam vazios
+      e precisam ser informados de novo para a reanálise. */
+  const openEdit = (template: MetaTemplate) => {
+    setEditing(template);
+    setDraft({
+      name: template.name,
+      category: template.category === 'MARKETING' ? 'MARKETING' : 'UTILITY',
+      language: template.language,
+      headerText: template.headerText ?? '',
+      bodyText: template.bodyText ?? '',
+      footerText: template.footerText ?? '',
+      exampleValues: [],
+    });
+    setDialogOpen(true);
+  };
+
+  const handleSave = async () => {
     if (issues.length > 0) {
       toast.error(issues[0].message);
       return;
     }
     setSaving(true);
     try {
-      const created = await whatsappTemplatesApi.create(effectiveDraft);
-      toast.success(`Template “${created.name}” enviado para análise da Meta.`);
+      if (editing) {
+        await whatsappTemplatesApi.update(editing.id, effectiveDraft);
+        toast.success(`Template “${editing.name}” atualizado e reenviado para análise da Meta.`);
+      } else {
+        const created = await whatsappTemplatesApi.create(effectiveDraft);
+        toast.success(`Template “${created.name}” enviado para análise da Meta.`);
+      }
       setDialogOpen(false);
       await load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Não foi possível criar o template.');
+      toast.error(error instanceof Error ? error.message : 'Não foi possível salvar o template.');
     } finally {
       setSaving(false);
     }
   };
+
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -193,7 +218,7 @@ export default function WhatsAppTemplatesSettings() {
       {!isAdmin && (
         <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
           <Lock className="h-4 w-4" />
-          Apenas administradores podem criar ou excluir templates.
+          Apenas administradores podem criar, editar ou excluir templates.
         </p>
       )}
 
@@ -249,10 +274,17 @@ export default function WhatsAppTemplatesSettings() {
                       </Button>
                     )}
                     {isAdmin && (
+                      <Button variant="ghost" size="sm" aria-label={`Editar o template ${template.name}`} onClick={() => openEdit(template)}>
+                        <Pencil className="h-4 w-4" />
+                        Editar
+                      </Button>
+                    )}
+                    {isAdmin && (
                       <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" aria-label={`Excluir o template ${template.name}`} onClick={() => { setDeleteTarget(template); setDeleteName(template.name); }}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
+
                   </div>
                 </div>
               </div>
@@ -264,24 +296,26 @@ export default function WhatsAppTemplatesSettings() {
       <Dialog open={dialogOpen} onOpenChange={(open) => { if (!saving) setDialogOpen(open); }}>
         <DialogContent className="max-h-[90vh] max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
           <DialogHeader>
-            <DialogTitle>Novo template</DialogTitle>
+            <DialogTitle>{editing ? `Editar ${editing.name}` : 'Novo template'}</DialogTitle>
             <DialogDescription>
               A Meta analisa cada template antes de liberar o envio. Use {'{{1}}'}, {'{{2}}'}… para os
               trechos variáveis e dê um exemplo real de cada um.
+              {editing && ' Nome e idioma não podem mudar; a edição volta para análise.'}
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block text-sm font-medium">Nome
-                <Input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: normalizeName(event.target.value) }))} className="mt-1.5 font-mono" placeholder="ex_retomada_diagnostico" />
+                <Input value={draft.name} disabled={!!editing} onChange={(event) => setDraft((current) => ({ ...current, name: normalizeName(event.target.value) }))} className="mt-1.5 font-mono" placeholder="ex_retomada_diagnostico" />
                 {showIssue('name') && <span className="mt-1 block text-xs font-normal text-destructive">{showIssue('name')}</span>}
               </label>
               <label className="block text-sm font-medium">Idioma
-                <select value={draft.language} onChange={(event) => setDraft((current) => ({ ...current, language: event.target.value }))} className={fieldClass}>
+                <select value={draft.language} disabled={!!editing} onChange={(event) => setDraft((current) => ({ ...current, language: event.target.value }))} className={fieldClass}>
                   {TEMPLATE_LANGUAGES.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}
                 </select>
               </label>
             </div>
+
             <label className="block text-sm font-medium">Finalidade
               <select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value as TemplateDraft['category'] }))} className={fieldClass}>
                 <option value="UTILITY">Utilidade — retomar um assunto em andamento (follow-up, confirmação)</option>
@@ -332,9 +366,10 @@ export default function WhatsAppTemplatesSettings() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setDialogOpen(false)} disabled={saving}>Cancelar</Button>
-            <Button variant="primary" onClick={() => void handleCreate()} disabled={saving || issues.length > 0}>
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              {saving ? 'Enviando…' : 'Enviar para aprovação'}
+            <Button variant="primary" onClick={() => void handleSave()} disabled={saving || issues.length > 0}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : editing ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {saving ? 'Enviando…' : editing ? 'Salvar e reenviar' : 'Enviar para aprovação'}
+
             </Button>
           </DialogFooter>
         </DialogContent>

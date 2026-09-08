@@ -51,9 +51,15 @@ export const whatsappTemplatesApi = {
     return { name: created.name ?? template.name, status: created.status ?? 'PENDING' };
   },
 
+  /** Edita um template existente na Meta. Nome e idioma são imutáveis lá. */
+  async update(id: string, template: TemplateDraft): Promise<void> {
+    await invokeTemplates({ action: 'update', id, template });
+  },
+
   async remove(name: string): Promise<void> {
     await invokeTemplates({ action: 'delete', name });
   },
+
 
   /** Enfileira o template aprovado para os contatos escolhidos. */
   async send(input: {
