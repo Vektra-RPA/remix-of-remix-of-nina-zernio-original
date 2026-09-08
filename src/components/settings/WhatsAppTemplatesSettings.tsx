@@ -289,24 +289,26 @@ export default function WhatsAppTemplatesSettings() {
       <Dialog open={dialogOpen} onOpenChange={(open) => { if (!saving) setDialogOpen(open); }}>
         <DialogContent className="max-h-[90vh] max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
           <DialogHeader>
-            <DialogTitle>Novo template</DialogTitle>
+            <DialogTitle>{editing ? `Editar ${editing.name}` : 'Novo template'}</DialogTitle>
             <DialogDescription>
               A Meta analisa cada template antes de liberar o envio. Use {'{{1}}'}, {'{{2}}'}… para os
               trechos variáveis e dê um exemplo real de cada um.
+              {editing && ' Nome e idioma não podem mudar; a edição volta para análise.'}
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block text-sm font-medium">Nome
-                <Input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: normalizeName(event.target.value) }))} className="mt-1.5 font-mono" placeholder="ex_retomada_diagnostico" />
+                <Input value={draft.name} disabled={!!editing} onChange={(event) => setDraft((current) => ({ ...current, name: normalizeName(event.target.value) }))} className="mt-1.5 font-mono" placeholder="ex_retomada_diagnostico" />
                 {showIssue('name') && <span className="mt-1 block text-xs font-normal text-destructive">{showIssue('name')}</span>}
               </label>
               <label className="block text-sm font-medium">Idioma
-                <select value={draft.language} onChange={(event) => setDraft((current) => ({ ...current, language: event.target.value }))} className={fieldClass}>
+                <select value={draft.language} disabled={!!editing} onChange={(event) => setDraft((current) => ({ ...current, language: event.target.value }))} className={fieldClass}>
                   {TEMPLATE_LANGUAGES.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}
                 </select>
               </label>
             </div>
+
             <label className="block text-sm font-medium">Finalidade
               <select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value as TemplateDraft['category'] }))} className={fieldClass}>
                 <option value="UTILITY">Utilidade — retomar um assunto em andamento (follow-up, confirmação)</option>
