@@ -274,10 +274,17 @@ export default function WhatsAppTemplatesSettings() {
                       </Button>
                     )}
                     {isAdmin && (
+                      <Button variant="ghost" size="sm" aria-label={`Editar o template ${template.name}`} onClick={() => openEdit(template)}>
+                        <Pencil className="h-4 w-4" />
+                        Editar
+                      </Button>
+                    )}
+                    {isAdmin && (
                       <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" aria-label={`Excluir o template ${template.name}`} onClick={() => { setDeleteTarget(template); setDeleteName(template.name); }}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
+
                   </div>
                 </div>
               </div>
