@@ -218,7 +218,7 @@ export default function WhatsAppTemplatesSettings() {
       {!isAdmin && (
         <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
           <Lock className="h-4 w-4" />
-          Apenas administradores podem criar ou excluir templates.
+          Apenas administradores podem criar, editar ou excluir templates.
         </p>
       )}
 
