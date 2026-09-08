@@ -117,55 +117,14 @@ serve(async (request) => {
         continue;
       }
 
-      const bodyParams = paramTokens.map((tokenValue) => resolveParam(tokenValue, contact));
-      const rendered = bodyText ? renderTemplateText(bodyText, bodyParams) : `[template] ${name}`;
-
-      // Conversa mais recente do contato; sem nenhuma, cria uma para o histórico.
-      const { data: existing, error: conversationError } = await service
-        .from('conversations')
-        .select('id')
-        .eq('contact_id', contact.id)
-        .order('last_message_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (conversationError) throw conversationError;
-
-      let conversationId = (existing as { id: string } | null)?.id ?? null;
-      if (!conversationId) {
-        const { data: created, error: createError } = await service
-          .from('conversations')
-          .insert({ contact_id: contact.id, status: 'human' })
-          .select('id')
-          .single();
-        if (createError) throw createError;
-        conversationId = (created as { id: string }).id;
-      }
-
-      const { data: messageRow, error: messageError } = await service
-        .from('messages')
-        .insert({
-          conversation_id: conversationId,
-          content: rendered,
-          type: 'text',
-          from_type: 'human',
-          status: 'processing',
-          sent_at: new Date().toISOString(),
-        })
-        .select('id')
-        .single();
-      if (messageError) throw messageError;
-
-      const { error: queueError } = await service.from('send_queue').insert({
-        conversation_id: conversationId,
-        contact_id: contact.id,
-        content: rendered,
-        from_type: 'human',
-        message_type: 'template',
-        priority: 2,
-        message_id: (messageRow as { id: string }).id,
-        metadata: { template: { name, language, bodyParams } },
+      await enqueueTemplateForContact(service, {
+        contact,
+        name,
+        language,
+        bodyText,
+        params: paramTokens,
       });
-      if (queueError) throw queueError;
+
 
       results.push({ contactId: contact.id, status: 'queued' });
     }
