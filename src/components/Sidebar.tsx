@@ -17,6 +17,8 @@ const menuItems = [
   { id: 'pipeline', label: 'Pipeline', icon: Kanban },
   { id: 'chat', label: 'Chat ao vivo', icon: MessageSquare },
   { id: 'contacts', label: 'Contatos', icon: Users },
+  { id: 'dispatch', label: 'Disparos', icon: Megaphone },
+
   { id: 'scheduling', label: 'Agendamentos', icon: Calendar },
   { id: 'team', label: 'Equipe', icon: ShieldCheck },
   { id: 'help', label: 'Ajuda', icon: LifeBuoy },
