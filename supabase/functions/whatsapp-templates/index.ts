@@ -174,7 +174,28 @@ async function handleViaZernio(
     });
   }
 
+  if (action === 'update') {
+    const draft = draftFromBody(body);
+    const issues = validateTemplateDraft(draft);
+    if (issues.length > 0) {
+      return json(400, { error: issues[0].message, code: 'invalid_template', issues });
+    }
+    const result = await zernioFetch(context, `/whatsapp/templates/${encodeURIComponent(draft.name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...buildUpdatePayload(draft), accountId: context.accountId }),
+    });
+    if (!result.ok) {
+      console.error('[whatsapp-templates] zernio update error', result.status, JSON.stringify(result.data).slice(0, 500));
+      return json(422, {
+        error: String(result.data?.error ?? 'Não foi possível editar o template pela Zernio.'),
+        code: 'zernio_update_failed',
+      });
+    }
+    return json(200, { success: true, provider: 'zernio' });
+  }
+
   const name = String(body.name ?? '').trim();
+
   if (!/^[a-z0-9_]+$/.test(name)) {
     return json(400, { error: 'Nome de template inválido.', code: 'invalid_template_name' });
   }
