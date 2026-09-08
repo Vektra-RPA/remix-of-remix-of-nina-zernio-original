@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FileCheck2, Loader2, Lock, Plus, RefreshCw, Send, Trash2 } from 'lucide-react';
+import { FileCheck2, Loader2, Lock, Pencil, Plus, RefreshCw, Send, Trash2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
