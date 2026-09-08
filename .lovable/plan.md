@@ -1,28 +1,40 @@
-# Promover amandayohana2303@gmail.com a administradora com edição do agente
+# Disparos — motor de campanhas em massa por WhatsApp
 
-## Situação atual (verificada)
+Nova aba lateral "Disparos", trazendo o motor de disparo do projeto de origem (campanhas, perfis de velocidade, pausar/retomar, progresso ao vivo) adaptado ao envio já existente aqui: templates aprovados da Meta, enfileirados no mesmo caminho de envio do app.
 
-- A conta `amandayohana2303@gmail.com` existe e **já tem o papel de administradora da plataforma**.
-- Porém, ela **não pertence a nenhum espaço de trabalho** e, hoje, **não existe nenhum espaço de trabalho criado** no projeto (remix novo).
-- A edição do agente depende de ser membro ativo de um espaço de trabalho com permissão de editar/publicar. É isso que está faltando — não o papel de administradora.
+## O que o usuário vai ver
 
-## O que será feito
+Nova entrada "Disparos" na barra lateral, entre Contatos e Agendamentos, com três blocos:
 
-1. Criar o espaço de trabalho principal do projeto (nome: "Trajetória Consultoria", ajustável).
-2. Adicionar a Amanda como membra **administradora ativa** desse espaço, com permissão de **publicar o agente** ligada.
-3. Criar o agente inicial e seu rascunho de configuração padrão, para que a tela de Configurações → Agente já abra pronta para edição em vez de vazia.
-4. Manter/confirmar o papel de administradora da plataforma que ela já possui.
-5. Conferir depois que a conta aparece como administradora com permissão de publicar e que o agente tem rascunho editável.
+1. **Resumo** — enviadas, taxa de entrega, campanhas em andamento, perfis criados.
+2. **Campanhas** — lista com status (rascunho, enviando, pausada, concluída, falha), barra de progresso ao vivo, botões pausar/retomar/cancelar e uma tela de detalhes com a lista de destinatários e o motivo de cada falha.
+3. **Perfis de velocidade** — criar/editar/excluir perfis com intervalo entre mensagens, tamanho do lote e pausa entre lotes; cada perfil mostra a estimativa de mensagens por dia. Um perfil pode ser marcado como padrão.
 
-## Detalhes técnicos
+### Assistente de nova campanha (4 passos)
 
-- Nada de mudança de esquema: apenas inserções de dados via SQL.
-  - `INSERT` em `public.workspaces` (status `active`, `created_by` = id da usuária).
-  - `INSERT` em `public.workspace_members` com `role = 'admin'`, `can_publish_agent = true`, `status = 'active'`.
-  - `INSERT` em `public.agents` + `public.agent_drafts` com a configuração padrão (`schemaVersion: 1`), espelhando o que a função `bootstrap_agent_workspace` faz — assim o resultado é idêntico ao caminho normal da aplicação.
-  - Garantir a linha em `public.user_roles` com `role = 'admin'` (já existe; `ON CONFLICT DO NOTHING`).
-- Nenhuma alteração em código da aplicação é necessária.
+1. Nome da campanha.
+2. Template aprovado (lista vinda da Meta, só os aprovados) + preenchimento das variáveis, aceitando valores fixos ou campos do contato (nome, telefone).
+3. Destinatários: contatos do CRM com filtro por tags e por etapa do funil; prévia da contagem; contatos bloqueados ou sem telefone são descartados com aviso.
+4. Ritmo: escolha do perfil de velocidade (ou ajuste manual) + prévia da mensagem e resumo antes de confirmar o disparo.
 
-## Observação
+Importação por planilha fica de fora — a origem dos contatos será estendida depois (Apollo).
 
-Se preferir usar outro nome para o espaço de trabalho, é só dizer antes da aprovação.
+## Como funciona por dentro
+
+**Banco (nova migração, com GRANTs e RLS por workspace/usuário como nas tabelas atuais):**
+- `dispatch_profiles` — nome, descrição, `delay_min_s`, `delay_max_s`, `batch_size`, `pause_between_batches_min/max`, `is_default`.
+- `broadcast_campaigns` — nome, `template_name`, `template_language`, `template_body`, `template_params` (tokens), parâmetros de ritmo copiados do perfil no momento da criação, `status`, `total_recipients`, `sent_count`, `failed_count`, `next_batch_at` (também usado como trava de concorrência), timestamps.
+- `broadcast_recipients` — campanha, `contact_id`, telefone, variáveis resolvidas, `status` (pending/sent/failed), `error_message`, `sent_at`.
+- Índices em `(campaign_id, status)` e `(status)`.
+
+**Edge function `broadcast-processor`** — porte do arquivo do projeto de origem, com estas mudanças:
+- envio: em vez de `send-meta-message`, cada destinatário reaproveita a rotina de `whatsapp-template-send` (cria/acha a conversa, grava a mensagem no histórico e insere em `send_queue` com `message_type = 'template'` e `metadata.template`), depois dispara o `whatsapp-sender`. A lógica compartilhada vai para `supabase/functions/_shared/template-dispatch.ts`, usada pelas duas funções.
+- mantém: trava atômica via `next_batch_at`, processamento por lote, atraso aleatório entre mensagens, pausa entre lotes, auto-reinvocação, corte por tempo de execução, checagem de pausa a cada 5 envios, conclusão automática.
+- remove: rotação de instâncias, spintax, mídia, áudio/ElevenLabs, fluxos — não se aplicam ao envio por template desta base.
+- valida JWT e exige papel admin/editor para iniciar, pausar ou retomar.
+
+**Frontend:** `src/pages/Dispatch.tsx` (+ componentes em `src/components/broadcasts/`), hooks `useBroadcasts` e `useDispatchProfiles` sobre react-query com atualização em tempo real das campanhas, serviço `src/services/broadcasts.ts`, rota `/dispatch` protegida e item novo no `Sidebar`. Visual segue os tokens e o estilo das páginas atuais (`operation-page`), não o CSS do projeto de origem.
+
+## Fora do escopo
+
+Importação CSV/Apollo, texto livre e mídia, áudio com voz, rotação de múltiplas instâncias.
