@@ -1,7 +1,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { renderTemplateText } from '../_shared/whatsapp-templates.ts';
 import { getUserFromToken } from '../_shared/auth.ts';
+import { enqueueTemplateForContact, type DispatchContact } from '../_shared/template-dispatch.ts';
+
 
 /**
  * Disparo de templates aprovados para contatos selecionados.
@@ -28,24 +29,8 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-interface ContactRow {
-  id: string;
-  name: string | null;
-  call_name: string | null;
-  phone_number: string | null;
-}
+type ContactRow = DispatchContact;
 
-/** Tokens aceitos nas variáveis: valor fixo ou campo do contato. */
-function resolveParam(token: string, contact: ContactRow): string {
-  switch (token) {
-    case '{{contact.name}}':
-      return (contact.call_name || contact.name || '').trim();
-    case '{{contact.phone}}':
-      return (contact.phone_number || '').trim();
-    default:
-      return token;
-  }
-}
 
 serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -117,55 +102,14 @@ serve(async (request) => {
         continue;
       }
 
-      const bodyParams = paramTokens.map((tokenValue) => resolveParam(tokenValue, contact));
-      const rendered = bodyText ? renderTemplateText(bodyText, bodyParams) : `[template] ${name}`;
-
-      // Conversa mais recente do contato; sem nenhuma, cria uma para o histórico.
-      const { data: existing, error: conversationError } = await service
-        .from('conversations')
-        .select('id')
-        .eq('contact_id', contact.id)
-        .order('last_message_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (conversationError) throw conversationError;
-
-      let conversationId = (existing as { id: string } | null)?.id ?? null;
-      if (!conversationId) {
-        const { data: created, error: createError } = await service
-          .from('conversations')
-          .insert({ contact_id: contact.id, status: 'human' })
-          .select('id')
-          .single();
-        if (createError) throw createError;
-        conversationId = (created as { id: string }).id;
-      }
-
-      const { data: messageRow, error: messageError } = await service
-        .from('messages')
-        .insert({
-          conversation_id: conversationId,
-          content: rendered,
-          type: 'text',
-          from_type: 'human',
-          status: 'processing',
-          sent_at: new Date().toISOString(),
-        })
-        .select('id')
-        .single();
-      if (messageError) throw messageError;
-
-      const { error: queueError } = await service.from('send_queue').insert({
-        conversation_id: conversationId,
-        contact_id: contact.id,
-        content: rendered,
-        from_type: 'human',
-        message_type: 'template',
-        priority: 2,
-        message_id: (messageRow as { id: string }).id,
-        metadata: { template: { name, language, bodyParams } },
+      await enqueueTemplateForContact(service, {
+        contact,
+        name,
+        language,
+        bodyText,
+        params: paramTokens,
       });
-      if (queueError) throw queueError;
+
 
       results.push({ contactId: contact.id, status: 'queued' });
     }

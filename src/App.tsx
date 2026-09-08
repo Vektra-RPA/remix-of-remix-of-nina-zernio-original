@@ -10,7 +10,9 @@ import Scheduling from './components/Scheduling';
 import Kanban from './components/Kanban';
 import Help from './components/Help';
 import SystemRoadmap from './components/SystemRoadmap';
+import Dispatch from './pages/Dispatch';
 import Auth from './pages/Auth';
+
 import ProtectedRoute from './components/ProtectedRoute';
 
 import { CompanySettingsProvider, useCompanySettings } from './hooks/useCompanySettings';
@@ -86,6 +88,8 @@ const App: React.FC = () => {
               <Route path="/chat" element={<ChatInterface />} />
               <Route path="/training" element={<Navigate to="/settings?section=knowledge" replace />} />
               <Route path="/contacts" element={<Contacts />} />
+              <Route path="/dispatch" element={<Dispatch />} />
+
               <Route path="/scheduling" element={<Scheduling />} />
               <Route path="/team" element={<Team />} />
               <Route path="/help" element={<Help />} />

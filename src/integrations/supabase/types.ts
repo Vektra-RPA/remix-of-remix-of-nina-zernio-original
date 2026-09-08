@@ -699,6 +699,153 @@ export type Database = {
           },
         ]
       }
+      broadcast_campaigns: {
+        Row: {
+          batch_size: number
+          completed_at: string | null
+          created_at: string
+          created_by: string | null
+          delay_max_s: number
+          delay_min_s: number
+          error_message: string | null
+          failed_count: number
+          id: string
+          name: string
+          next_batch_at: string | null
+          pause_between_batches_max: number
+          pause_between_batches_min: number
+          profile_id: string | null
+          sent_count: number
+          started_at: string | null
+          status: string
+          template_body: string
+          template_language: string
+          template_name: string
+          template_params: Json
+          total_recipients: number
+          updated_at: string
+        }
+        Insert: {
+          batch_size?: number
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string | null
+          delay_max_s?: number
+          delay_min_s?: number
+          error_message?: string | null
+          failed_count?: number
+          id?: string
+          name: string
+          next_batch_at?: string | null
+          pause_between_batches_max?: number
+          pause_between_batches_min?: number
+          profile_id?: string | null
+          sent_count?: number
+          started_at?: string | null
+          status?: string
+          template_body?: string
+          template_language?: string
+          template_name: string
+          template_params?: Json
+          total_recipients?: number
+          updated_at?: string
+        }
+        Update: {
+          batch_size?: number
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string | null
+          delay_max_s?: number
+          delay_min_s?: number
+          error_message?: string | null
+          failed_count?: number
+          id?: string
+          name?: string
+          next_batch_at?: string | null
+          pause_between_batches_max?: number
+          pause_between_batches_min?: number
+          profile_id?: string | null
+          sent_count?: number
+          started_at?: string | null
+          status?: string
+          template_body?: string
+          template_language?: string
+          template_name?: string
+          template_params?: Json
+          total_recipients?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "broadcast_campaigns_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "dispatch_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      broadcast_recipients: {
+        Row: {
+          campaign_id: string
+          contact_id: string | null
+          contact_name: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          phone_number: string
+          sent_at: string | null
+          status: string
+          variables: Json
+        }
+        Insert: {
+          campaign_id: string
+          contact_id?: string | null
+          contact_name?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          phone_number: string
+          sent_at?: string | null
+          status?: string
+          variables?: Json
+        }
+        Update: {
+          campaign_id?: string
+          contact_id?: string | null
+          contact_name?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          phone_number?: string
+          sent_at?: string | null
+          status?: string
+          variables?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "broadcast_recipients_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "broadcast_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "broadcast_recipients_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "broadcast_recipients_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts_with_stats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       calendar_integrations: {
         Row: {
           access_token: string | null
@@ -1176,6 +1323,51 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      dispatch_profiles: {
+        Row: {
+          batch_size: number
+          created_at: string
+          created_by: string | null
+          delay_max_s: number
+          delay_min_s: number
+          description: string
+          id: string
+          is_default: boolean
+          name: string
+          pause_between_batches_max: number
+          pause_between_batches_min: number
+          updated_at: string
+        }
+        Insert: {
+          batch_size?: number
+          created_at?: string
+          created_by?: string | null
+          delay_max_s?: number
+          delay_min_s?: number
+          description?: string
+          id?: string
+          is_default?: boolean
+          name: string
+          pause_between_batches_max?: number
+          pause_between_batches_min?: number
+          updated_at?: string
+        }
+        Update: {
+          batch_size?: number
+          created_at?: string
+          created_by?: string | null
+          delay_max_s?: number
+          delay_min_s?: number
+          description?: string
+          id?: string
+          is_default?: boolean
+          name?: string
+          pause_between_batches_max?: number
+          pause_between_batches_min?: number
+          updated_at?: string
+        }
+        Relationships: []
       }
       eval_results: {
         Row: {

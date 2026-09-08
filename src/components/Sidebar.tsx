@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutDashboard, MessageSquare, Users, Settings as SettingsIcon, LogOut, ShieldCheck, Calendar, Kanban, LifeBuoy, Building2 } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Users, Settings as SettingsIcon, LogOut, ShieldCheck, Calendar, Kanban, LifeBuoy, Building2, Megaphone } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useCompanySettings } from '@/hooks/useCompanySettings';
 import { useAuth } from '@/hooks/useAuth';
@@ -17,6 +17,8 @@ const menuItems = [
   { id: 'pipeline', label: 'Pipeline', icon: Kanban },
   { id: 'chat', label: 'Chat ao vivo', icon: MessageSquare },
   { id: 'contacts', label: 'Contatos', icon: Users },
+  { id: 'dispatch', label: 'Disparos', icon: Megaphone },
+
   { id: 'scheduling', label: 'Agendamentos', icon: Calendar },
   { id: 'team', label: 'Equipe', icon: ShieldCheck },
   { id: 'help', label: 'Ajuda', icon: LifeBuoy },
