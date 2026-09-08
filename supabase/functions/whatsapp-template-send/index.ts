@@ -28,24 +28,8 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-interface ContactRow {
-  id: string;
-  name: string | null;
-  call_name: string | null;
-  phone_number: string | null;
-}
+type ContactRow = DispatchContact;
 
-/** Tokens aceitos nas variáveis: valor fixo ou campo do contato. */
-function resolveParam(token: string, contact: ContactRow): string {
-  switch (token) {
-    case '{{contact.name}}':
-      return (contact.call_name || contact.name || '').trim();
-    case '{{contact.phone}}':
-      return (contact.phone_number || '').trim();
-    default:
-      return token;
-  }
-}
 
 serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
