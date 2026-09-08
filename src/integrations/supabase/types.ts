@@ -605,6 +605,269 @@ export type Database = {
           },
         ]
       }
+      apollo_leads: {
+        Row: {
+          apollo_person_id: string
+          campaign_id: string | null
+          city: string | null
+          company_city: string | null
+          company_domain: string | null
+          company_employees: number | null
+          company_industry: string | null
+          company_name: string | null
+          company_state: string | null
+          contact_id: string | null
+          contacted_at: string | null
+          country: string | null
+          created_at: string
+          disqualify_reason: string | null
+          email: string | null
+          email_status: string | null
+          fetched_at: string
+          first_name: string | null
+          full_name: string | null
+          id: string
+          last_name: string | null
+          linkedin_url: string | null
+          notes: string | null
+          phone_number: string | null
+          priority_score: number
+          raw: Json
+          replied_at: string | null
+          run_id: string | null
+          score_reasons: Json
+          seniority: string | null
+          state: string | null
+          status: string
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          apollo_person_id: string
+          campaign_id?: string | null
+          city?: string | null
+          company_city?: string | null
+          company_domain?: string | null
+          company_employees?: number | null
+          company_industry?: string | null
+          company_name?: string | null
+          company_state?: string | null
+          contact_id?: string | null
+          contacted_at?: string | null
+          country?: string | null
+          created_at?: string
+          disqualify_reason?: string | null
+          email?: string | null
+          email_status?: string | null
+          fetched_at?: string
+          first_name?: string | null
+          full_name?: string | null
+          id?: string
+          last_name?: string | null
+          linkedin_url?: string | null
+          notes?: string | null
+          phone_number?: string | null
+          priority_score?: number
+          raw?: Json
+          replied_at?: string | null
+          run_id?: string | null
+          score_reasons?: Json
+          seniority?: string | null
+          state?: string | null
+          status?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          apollo_person_id?: string
+          campaign_id?: string | null
+          city?: string | null
+          company_city?: string | null
+          company_domain?: string | null
+          company_employees?: number | null
+          company_industry?: string | null
+          company_name?: string | null
+          company_state?: string | null
+          contact_id?: string | null
+          contacted_at?: string | null
+          country?: string | null
+          created_at?: string
+          disqualify_reason?: string | null
+          email?: string | null
+          email_status?: string | null
+          fetched_at?: string
+          first_name?: string | null
+          full_name?: string | null
+          id?: string
+          last_name?: string | null
+          linkedin_url?: string | null
+          notes?: string | null
+          phone_number?: string | null
+          priority_score?: number
+          raw?: Json
+          replied_at?: string | null
+          run_id?: string | null
+          score_reasons?: Json
+          seniority?: string | null
+          state?: string | null
+          status?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "apollo_leads_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "broadcast_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "apollo_leads_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "apollo_leads_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts_with_stats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      apollo_search_runs: {
+        Row: {
+          campaign_id: string | null
+          created_at: string
+          error_message: string | null
+          fetched: number
+          finished_at: string | null
+          id: string
+          locked_until: string | null
+          new_leads: number
+          requested: number
+          started_at: string
+          status: string
+          trigger_source: string
+          with_phone: number
+        }
+        Insert: {
+          campaign_id?: string | null
+          created_at?: string
+          error_message?: string | null
+          fetched?: number
+          finished_at?: string | null
+          id?: string
+          locked_until?: string | null
+          new_leads?: number
+          requested?: number
+          started_at?: string
+          status?: string
+          trigger_source?: string
+          with_phone?: number
+        }
+        Update: {
+          campaign_id?: string | null
+          created_at?: string
+          error_message?: string | null
+          fetched?: number
+          finished_at?: string | null
+          id?: string
+          locked_until?: string | null
+          new_leads?: number
+          requested?: number
+          started_at?: string
+          status?: string
+          trigger_source?: string
+          with_phone?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "apollo_search_runs_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "broadcast_campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      apollo_search_settings: {
+        Row: {
+          auto_dispatch: boolean
+          created_at: string
+          employees_max: number
+          employees_min: number
+          id: string
+          industries: string[]
+          paused: boolean
+          paused_reason: string | null
+          profile_id: string | null
+          reveal_phones: boolean
+          states: string[]
+          template_body: string | null
+          template_language: string | null
+          template_name: string | null
+          template_params: Json
+          titles: string[]
+          updated_at: string
+          webhook_token: string | null
+          weekly_quota: number
+        }
+        Insert: {
+          auto_dispatch?: boolean
+          created_at?: string
+          employees_max?: number
+          employees_min?: number
+          id?: string
+          industries?: string[]
+          paused?: boolean
+          paused_reason?: string | null
+          profile_id?: string | null
+          reveal_phones?: boolean
+          states?: string[]
+          template_body?: string | null
+          template_language?: string | null
+          template_name?: string | null
+          template_params?: Json
+          titles?: string[]
+          updated_at?: string
+          webhook_token?: string | null
+          weekly_quota?: number
+        }
+        Update: {
+          auto_dispatch?: boolean
+          created_at?: string
+          employees_max?: number
+          employees_min?: number
+          id?: string
+          industries?: string[]
+          paused?: boolean
+          paused_reason?: string | null
+          profile_id?: string | null
+          reveal_phones?: boolean
+          states?: string[]
+          template_body?: string | null
+          template_language?: string | null
+          template_name?: string | null
+          template_params?: Json
+          titles?: string[]
+          updated_at?: string
+          webhook_token?: string | null
+          weekly_quota?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "apollo_search_settings_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "dispatch_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       appointments: {
         Row: {
           attendees: string[] | null
