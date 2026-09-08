@@ -5,11 +5,31 @@ import { resolveNinaWhatsAppRow } from '../_shared/whatsapp-credentials.ts';
 import { getUserFromToken } from '../_shared/auth.ts';
 import {
   buildCreatePayload,
+  buildUpdatePayload,
   parseMetaTemplate,
   validateTemplateDraft,
   TEMPLATE_CATEGORIES,
   type TemplateDraft,
 } from '../_shared/whatsapp-templates.ts';
+
+/** Rascunho saneado a partir do corpo da requisição (criação e edição). */
+function draftFromBody(body: Record<string, unknown>): TemplateDraft {
+  const raw = body.template && typeof body.template === 'object' ? body.template as Record<string, unknown> : {};
+  return {
+    name: String(raw.name ?? '').trim().toLowerCase(),
+    category: (TEMPLATE_CATEGORIES as readonly string[]).includes(String(raw.category))
+      ? String(raw.category) as TemplateDraft['category']
+      : 'UTILITY',
+    language: String(raw.language ?? 'pt_BR'),
+    headerText: raw.headerText ? String(raw.headerText).slice(0, 200) : undefined,
+    bodyText: String(raw.bodyText ?? '').slice(0, 2_000),
+    footerText: raw.footerText ? String(raw.footerText).slice(0, 200) : undefined,
+    exampleValues: Array.isArray(raw.exampleValues)
+      ? raw.exampleValues.map((value) => String(value).slice(0, 500)).slice(0, 20)
+      : [],
+  };
+}
+
 
 const GRAPH_API_URL = 'https://graph.facebook.com/v18.0';
 
