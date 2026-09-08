@@ -1,7 +1,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { renderTemplateText } from '../_shared/whatsapp-templates.ts';
 import { getUserFromToken } from '../_shared/auth.ts';
+import { enqueueTemplateForContact, type DispatchContact } from '../_shared/template-dispatch.ts';
+
 
 /**
  * Disparo de templates aprovados para contatos selecionados.
