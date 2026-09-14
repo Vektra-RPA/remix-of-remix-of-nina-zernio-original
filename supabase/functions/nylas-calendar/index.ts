@@ -207,6 +207,34 @@ async function listNylasProviders(): Promise<string[] | null> {
   }
 }
 
+/**
+ * Application ID real da conta Nylas, lido de `GET /v3/applications`.
+ *
+ * O campo do formulário aceita qualquer texto, e é fácil colar ali um id que
+ * não é o da aplicação (um grant, por exemplo). O Hosted Auth responde a isso
+ * com "Application not found", sem dizer qual era o valor certo. A API Key
+ * pertence a uma única aplicação, então o id correto é sempre descobrível —
+ * usá-lo é melhor do que confiar no que foi colado.
+ */
+const APPLICATION_TTL_MS = 10 * 60_000;
+let applicationCache: { id: string | null; at: number } | null = null;
+
+async function resolveApplicationId(): Promise<string | null> {
+  if (applicationCache && Date.now() - applicationCache.at < APPLICATION_TTL_MS) {
+    return applicationCache.id;
+  }
+  let id: string | null = null;
+  try {
+    const { response, data } = await nylasFetch('/v3/applications');
+    const value = data?.data?.application_id ?? data?.application_id;
+    if (response.ok && typeof value === 'string' && value) id = value;
+  } catch (error) {
+    console.error('[nylas-calendar] application lookup failed', describeError(error));
+  }
+  applicationCache = { id, at: Date.now() };
+  return id;
+}
+
 async function nylasFetch(path: string, init: RequestInit = {}) {
   const config = nylasConfig();
   const response = await fetch(`${config.apiUri}${path}`, {
@@ -713,16 +741,22 @@ serve(async (req) => {
       if (settingsError) throw settingsError;
       if (!settingsRow?.id) return json({ error: 'Configurações da instância não encontradas.' }, 400);
 
+      // Grava a chave antes de perguntar ao Nylas qual é a aplicação dela:
+      // `resolveApplicationId` usa as credenciais em memória.
+      storedCredentials = { clientId, apiKey, apiUri };
+      connectorsCache = null;
+      applicationCache = null;
+      const realApplicationId = (await resolveApplicationId()) ?? clientId;
+
       const { error: saveError } = await supabase
         .from('nina_settings')
-        .update({ nylas_client_id: clientId, nylas_api_key: apiKey, nylas_api_uri: apiUri })
+        .update({ nylas_client_id: realApplicationId, nylas_api_key: apiKey, nylas_api_uri: apiUri })
         .eq('id', settingsRow.id);
       if (saveError) throw saveError;
 
-      storedCredentials = { clientId, apiKey, apiUri };
-      connectorsCache = null;
+      storedCredentials = { clientId: realApplicationId, apiKey, apiUri };
       const providers = await listNylasProviders();
-      return json({ ok: true, providers });
+      return json({ ok: true, providers, applicationId: realApplicationId });
     }
 
     if (action === 'clear_credentials') {
@@ -736,6 +770,7 @@ serve(async (req) => {
       }
       storedCredentials = { clientId: null, apiKey: null, apiUri: null };
       connectorsCache = null;
+      applicationCache = null;
       return json({ ok: true });
     }
 
@@ -759,7 +794,10 @@ serve(async (req) => {
       if (stateError) throw stateError;
 
       const authUrl = new URL(`${config.apiUri}/v3/connect/auth`);
-      authUrl.searchParams.set('client_id', config.clientId);
+      // A aplicação dona da API Key manda; o valor colado no formulário é só
+      // fallback quando a consulta não responde.
+      const applicationId = (await resolveApplicationId()) ?? config.clientId;
+      authUrl.searchParams.set('client_id', applicationId);
       authUrl.searchParams.set('redirect_uri', config.redirectUri);
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('access_type', 'offline');
