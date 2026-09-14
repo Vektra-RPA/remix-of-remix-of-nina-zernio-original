@@ -741,16 +741,22 @@ serve(async (req) => {
       if (settingsError) throw settingsError;
       if (!settingsRow?.id) return json({ error: 'Configurações da instância não encontradas.' }, 400);
 
+      // Grava a chave antes de perguntar ao Nylas qual é a aplicação dela:
+      // `resolveApplicationId` usa as credenciais em memória.
+      storedCredentials = { clientId, apiKey, apiUri };
+      connectorsCache = null;
+      applicationCache = null;
+      const realApplicationId = (await resolveApplicationId()) ?? clientId;
+
       const { error: saveError } = await supabase
         .from('nina_settings')
-        .update({ nylas_client_id: clientId, nylas_api_key: apiKey, nylas_api_uri: apiUri })
+        .update({ nylas_client_id: realApplicationId, nylas_api_key: apiKey, nylas_api_uri: apiUri })
         .eq('id', settingsRow.id);
       if (saveError) throw saveError;
 
-      storedCredentials = { clientId, apiKey, apiUri };
-      connectorsCache = null;
+      storedCredentials = { clientId: realApplicationId, apiKey, apiUri };
       const providers = await listNylasProviders();
-      return json({ ok: true, providers });
+      return json({ ok: true, providers, applicationId: realApplicationId });
     }
 
     if (action === 'clear_credentials') {
