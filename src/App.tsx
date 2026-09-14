@@ -13,6 +13,7 @@ import SystemRoadmap from './components/SystemRoadmap';
 import Dispatch from './pages/Dispatch';
 import Leads from './pages/Leads';
 import Auth from './pages/Auth';
+import NylasCallback from './pages/NylasCallback';
 
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -76,6 +77,7 @@ const App: React.FC = () => {
           <Routes>
             {/* Public Routes */}
             <Route path="/auth" element={<Auth />} />
+            <Route path="/calendar/callback" element={<NylasCallback />} />
             
             {/* Protected Routes (With Sidebar) */}
             <Route element={

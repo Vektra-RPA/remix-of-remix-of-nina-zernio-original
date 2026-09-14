@@ -520,6 +520,85 @@ async function syncUpcoming(supabase: SupabaseClient) {
   return { total: data?.length ?? 0, synced, errors };
 }
 
+/**
+ * Troca o `code` do OAuth pelo grant e persiste a conexão.
+ *
+ * Usado tanto pelo callback antigo (GET na própria edge function) quanto pelo
+ * novo fluxo em que o navegador retorna para uma página do app e ela chama essa
+ * função por POST. O `redirectUri` precisa ser exatamente o mesmo enviado na
+ * URL de autorização.
+ */
+async function exchangeCodeAndConnect(
+  supabase: SupabaseClient,
+  code: string,
+  state: string,
+  redirectUri: string,
+): Promise<{ ok: boolean; message: string }> {
+  const stateHash = await sha256(state);
+  const { data: stateRow, error: stateError } = await supabase
+    .from('calendar_oauth_states')
+    .delete()
+    .eq('state_hash', stateHash)
+    .gt('expires_at', new Date().toISOString())
+    .select('user_id')
+    .maybeSingle();
+  if (stateError) throw stateError;
+  if (!stateRow) return { ok: false, message: 'A autorização expirou. Tente conectar novamente.' };
+
+  const config = nylasConfig();
+  const { response, data } = await nylasFetch('/v3/connect/token', {
+    method: 'POST',
+    body: JSON.stringify({
+      code,
+      client_id: config.clientId,
+      client_secret: config.apiKey,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }),
+  });
+  if (!response.ok || !data?.grant_id) {
+    console.error('[nylas-calendar] token exchange failed', response.status, JSON.stringify(data).slice(0, 400));
+    return { ok: false, message: nylasErrorMessage(data, 'O Nylas recusou a autorização.') };
+  }
+
+  // O token exchange nem sempre traz o provider; o grant tem a resposta
+  // definitiva — e sem ele a sala automática (Meet/Teams) ficaria muda.
+  let grantProvider = typeof data.provider === 'string' && data.provider ? data.provider : null;
+  if (!grantProvider) {
+    try {
+      const grantInfo = await nylasFetch(`/v3/grants/${encodeURIComponent(data.grant_id)}`);
+      const provider = grantInfo.data?.data?.provider;
+      if (typeof provider === 'string' && provider) grantProvider = provider;
+    } catch {
+      // Sem o provider a conexão ainda funciona; só a sala automática fica desligada.
+    }
+  }
+
+  // Reconexão preserva as preferências existentes; e-mail só é sobrescrito
+  // quando o Nylas o informou.
+  const existing = await getIntegration(supabase);
+  const { error: upsertError } = await supabase
+    .from('calendar_integrations')
+    .upsert({
+      provider: 'nylas',
+      grant_id: data.grant_id,
+      grant_provider: grantProvider,
+      account_email: typeof data.email === 'string' && data.email ? data.email : existing?.account_email ?? null,
+      owner_user_id: stateRow.user_id,
+      status: 'active',
+      sync_enabled: existing ? existing.sync_enabled : true,
+      last_error: null,
+    }, { onConflict: 'provider' });
+  if (upsertError) throw upsertError;
+
+  // Espelha os próximos agendamentos sem bloquear a página de retorno; o
+  // waitUntil impede o runtime de encerrar a function junto com a Response.
+  const initialSync = syncUpcoming(supabase).catch((error) => console.error('[nylas-calendar] initial sync', error));
+  (globalThis as { EdgeRuntime?: { waitUntil?: (task: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil?.(initialSync);
+
+  return { ok: true, message: `Agenda de ${data.email || 'sua conta'} conectada. Pode fechar esta janela.` };
+}
+
 async function authenticate(req: Request, supabase: SupabaseClient) {
   const authHeader = req.headers.get('authorization');
   const token = authHeader?.replace('Bearer ', '').trim();

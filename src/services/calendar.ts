@@ -189,15 +189,26 @@ export const calendarApi = {
 
   /**
    * `provider` pula o seletor do próprio Nylas; `loginHint` reautentica o
-   * grant existente em vez de duplicar.
+   * grant existente em vez de duplicar. `redirectUri` deve apontar para uma
+   * página do app (ex.: /calendar/callback), nunca para a edge function.
    */
-  async connect(options: { provider?: string; loginHint?: string } = {}): Promise<string> {
+  async connect(options: { provider?: string; loginHint?: string; redirectUri: string }): Promise<string> {
     const data = await invokeProvider<{ authUrl: string }>('nylas', {
       action: 'connect',
+      redirectUri: options.redirectUri,
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.loginHint ? { loginHint: options.loginHint } : {}),
     });
     return data.authUrl;
+  },
+
+  async exchangeCode(input: { code: string; state: string; redirectUri: string }): Promise<void> {
+    await invokeProvider('nylas', {
+      action: 'exchange_code',
+      code: input.code,
+      state: input.state,
+      redirectUri: input.redirectUri,
+    });
   },
 
   async updateSettings(settings: {
