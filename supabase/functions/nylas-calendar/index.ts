@@ -770,6 +770,7 @@ serve(async (req) => {
       }
       storedCredentials = { clientId: null, apiKey: null, apiUri: null };
       connectorsCache = null;
+      applicationCache = null;
       return json({ ok: true });
     }
 
