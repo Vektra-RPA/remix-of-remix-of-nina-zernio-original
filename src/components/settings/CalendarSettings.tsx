@@ -50,7 +50,7 @@ const TIME_ZONES = [
 /** Origem que pode postar o resultado do OAuth de volta para esta janela. */
 const CALLBACK_ORIGIN = (() => {
   try {
-    return new URL(import.meta.env.VITE_SUPABASE_URL as string).origin;
+    return window.location.origin;
   } catch {
     return null;
   }
@@ -238,6 +238,7 @@ const CalendarSettings: React.FC = () => {
 
     try {
       const nextAuthUrl = await calendarApi.connect({
+        redirectUri: `${window.location.origin}/calendar/callback`,
         ...(provider ? { provider: provider.id } : {}),
         ...(loginHint ? { loginHint } : {}),
       });
