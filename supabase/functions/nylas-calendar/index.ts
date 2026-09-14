@@ -787,7 +787,10 @@ serve(async (req) => {
       if (stateError) throw stateError;
 
       const authUrl = new URL(`${config.apiUri}/v3/connect/auth`);
-      authUrl.searchParams.set('client_id', config.clientId);
+      // A aplicação dona da API Key manda; o valor colado no formulário é só
+      // fallback quando a consulta não responde.
+      const applicationId = (await resolveApplicationId()) ?? config.clientId;
+      authUrl.searchParams.set('client_id', applicationId);
       authUrl.searchParams.set('redirect_uri', config.redirectUri);
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('access_type', 'offline');
