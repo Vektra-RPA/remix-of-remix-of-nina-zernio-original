@@ -207,6 +207,34 @@ async function listNylasProviders(): Promise<string[] | null> {
   }
 }
 
+/**
+ * Application ID real da conta Nylas, lido de `GET /v3/applications`.
+ *
+ * O campo do formulário aceita qualquer texto, e é fácil colar ali um id que
+ * não é o da aplicação (um grant, por exemplo). O Hosted Auth responde a isso
+ * com "Application not found", sem dizer qual era o valor certo. A API Key
+ * pertence a uma única aplicação, então o id correto é sempre descobrível —
+ * usá-lo é melhor do que confiar no que foi colado.
+ */
+const APPLICATION_TTL_MS = 10 * 60_000;
+let applicationCache: { id: string | null; at: number } | null = null;
+
+async function resolveApplicationId(): Promise<string | null> {
+  if (applicationCache && Date.now() - applicationCache.at < APPLICATION_TTL_MS) {
+    return applicationCache.id;
+  }
+  let id: string | null = null;
+  try {
+    const { response, data } = await nylasFetch('/v3/applications');
+    const value = data?.data?.application_id ?? data?.application_id;
+    if (response.ok && typeof value === 'string' && value) id = value;
+  } catch (error) {
+    console.error('[nylas-calendar] application lookup failed', describeError(error));
+  }
+  applicationCache = { id, at: Date.now() };
+  return id;
+}
+
 async function nylasFetch(path: string, init: RequestInit = {}) {
   const config = nylasConfig();
   const response = await fetch(`${config.apiUri}${path}`, {
