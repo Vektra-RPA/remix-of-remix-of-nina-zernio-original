@@ -37,8 +37,9 @@ const NylasCallback: React.FC = () => {
     }
 
     let cancelled = false;
+    const redirectUri = `${window.location.origin}/calendar/callback`;
     calendarApi
-      .exchangeCode({ code, state })
+      .exchangeCode({ code, state, redirectUri })
       .then(() => {
         if (cancelled) return;
         setStatus('success');
