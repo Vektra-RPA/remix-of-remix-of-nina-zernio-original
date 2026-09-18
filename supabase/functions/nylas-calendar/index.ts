@@ -644,69 +644,9 @@ serve(async (req) => {
         const state = url.searchParams.get('state');
         if (!code || !state) return oauthResultPage(false, 'Resposta de autorização incompleta.');
 
-        const stateHash = await sha256(state);
-        const { data: stateRow, error: stateError } = await supabase
-          .from('calendar_oauth_states')
-          .delete()
-          .eq('state_hash', stateHash)
-          .gt('expires_at', new Date().toISOString())
-          .select('user_id')
-          .maybeSingle();
-        if (stateError) throw stateError;
-        if (!stateRow) return oauthResultPage(false, 'A autorização expirou. Tente conectar novamente.');
-
         const config = nylasConfig();
-        const { response, data } = await nylasFetch('/v3/connect/token', {
-          method: 'POST',
-          body: JSON.stringify({
-            code,
-            client_id: config.clientId,
-            client_secret: config.apiKey,
-            redirect_uri: config.redirectUri,
-            grant_type: 'authorization_code',
-          }),
-        });
-        if (!response.ok || !data?.grant_id) {
-          console.error('[nylas-calendar] token exchange failed', response.status, JSON.stringify(data).slice(0, 400));
-          return oauthResultPage(false, nylasErrorMessage(data, 'O Nylas recusou a autorização.'));
-        }
-
-        // O token exchange nem sempre traz o provider; o grant tem a resposta
-        // definitiva — e sem ele a sala automática (Meet/Teams) ficaria muda.
-        let grantProvider = typeof data.provider === 'string' && data.provider ? data.provider : null;
-        if (!grantProvider) {
-          try {
-            const grantInfo = await nylasFetch(`/v3/grants/${encodeURIComponent(data.grant_id)}`);
-            const provider = grantInfo.data?.data?.provider;
-            if (typeof provider === 'string' && provider) grantProvider = provider;
-          } catch {
-            // Sem o provider a conexão ainda funciona; só a sala automática fica desligada.
-          }
-        }
-
-        // Reconexão preserva as preferências existentes; e-mail só é sobrescrito
-        // quando o Nylas o informou.
-        const existing = await getIntegration(supabase);
-        const { error: upsertError } = await supabase
-          .from('calendar_integrations')
-          .upsert({
-            provider: 'nylas',
-            grant_id: data.grant_id,
-            grant_provider: grantProvider,
-            account_email: typeof data.email === 'string' && data.email ? data.email : existing?.account_email ?? null,
-            owner_user_id: stateRow.user_id,
-            status: 'active',
-            sync_enabled: existing ? existing.sync_enabled : true,
-            last_error: null,
-          }, { onConflict: 'provider' });
-        if (upsertError) throw upsertError;
-
-        // Espelha os próximos agendamentos sem bloquear a página de retorno; o
-        // waitUntil impede o runtime de encerrar a function junto com a Response.
-        const initialSync = syncUpcoming(supabase).catch((error) => console.error('[nylas-calendar] initial sync', error));
-        (globalThis as { EdgeRuntime?: { waitUntil?: (task: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil?.(initialSync);
-
-        return oauthResultPage(true, `Agenda de ${data.email || 'sua conta'} conectada. Pode fechar esta janela.`);
+        const result = await exchangeCodeAndConnect(supabase, code, state, config.redirectUri);
+        return oauthResultPage(result.ok, result.message);
       } catch (callbackError) {
         console.error('[nylas-calendar] callback', callbackError);
         return oauthResultPage(false, describeError(callbackError));
@@ -872,12 +812,19 @@ serve(async (req) => {
       });
       if (stateError) throw stateError;
 
+      // O navegador volta para uma página do app (ex.: /calendar/callback), que
+      // troca o código por POST. Só faz sentido aceitar URL https do próprio app.
+      const requestedRedirect = typeof body.redirectUri === 'string' ? body.redirectUri.trim() : '';
+      if (!requestedRedirect || !/^https:\/\/[\w.-]+(\/[\w\-./%]*)?$/.test(requestedRedirect)) {
+        return json({ error: 'Informe a URL de retorno da página de callback do aplicativo.' }, 400);
+      }
+
       const authUrl = new URL(`${config.apiUri}/v3/connect/auth`);
       // A aplicação dona da API Key manda; o valor colado no formulário é só
       // fallback quando a consulta não responde.
       const applicationId = (await resolveApplicationId()) ?? config.clientId;
       authUrl.searchParams.set('client_id', applicationId);
-      authUrl.searchParams.set('redirect_uri', config.redirectUri);
+      authUrl.searchParams.set('redirect_uri', requestedRedirect);
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('access_type', 'offline');
       authUrl.searchParams.set('state', state);
@@ -892,6 +839,21 @@ serve(async (req) => {
       }
       return json({ authUrl: authUrl.toString() });
     }
+
+    if (action === 'exchange_code') {
+      // Chamado pela página de callback do app, com a sessão de quem autorizou.
+      const code = typeof body.code === 'string' ? body.code.trim() : '';
+      const state = typeof body.state === 'string' ? body.state.trim() : '';
+      if (!code || !state) return json({ error: 'Resposta de autorização incompleta.' }, 400);
+      const requestedRedirect = typeof body.redirectUri === 'string' ? body.redirectUri.trim() : '';
+      if (!requestedRedirect || !/^https:\/\/[\w.-]+(\/[\w\-./%]*)?$/.test(requestedRedirect)) {
+        return json({ error: 'URL de retorno inválida.' }, 400);
+      }
+      const result = await exchangeCodeAndConnect(supabase, code, state, requestedRedirect);
+      if (!result.ok) return json({ error: result.message }, 400);
+      return json({ ok: true });
+    }
+
 
     if (action === 'update_settings') {
       const patch: Record<string, unknown> = {};
