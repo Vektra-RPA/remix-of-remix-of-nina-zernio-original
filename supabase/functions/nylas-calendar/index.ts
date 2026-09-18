@@ -812,12 +812,19 @@ serve(async (req) => {
       });
       if (stateError) throw stateError;
 
+      // O navegador volta para uma página do app (ex.: /calendar/callback), que
+      // troca o código por POST. Só faz sentido aceitar URL https do próprio app.
+      const requestedRedirect = typeof body.redirectUri === 'string' ? body.redirectUri.trim() : '';
+      if (!requestedRedirect || !/^https:\/\/[\w.-]+(\/[\w\-./%]*)?$/.test(requestedRedirect)) {
+        return json({ error: 'Informe a URL de retorno da página de callback do aplicativo.' }, 400);
+      }
+
       const authUrl = new URL(`${config.apiUri}/v3/connect/auth`);
       // A aplicação dona da API Key manda; o valor colado no formulário é só
       // fallback quando a consulta não responde.
       const applicationId = (await resolveApplicationId()) ?? config.clientId;
       authUrl.searchParams.set('client_id', applicationId);
-      authUrl.searchParams.set('redirect_uri', config.redirectUri);
+      authUrl.searchParams.set('redirect_uri', requestedRedirect);
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('access_type', 'offline');
       authUrl.searchParams.set('state', state);
@@ -832,6 +839,21 @@ serve(async (req) => {
       }
       return json({ authUrl: authUrl.toString() });
     }
+
+    if (action === 'exchange_code') {
+      // Chamado pela página de callback do app, com a sessão de quem autorizou.
+      const code = typeof body.code === 'string' ? body.code.trim() : '';
+      const state = typeof body.state === 'string' ? body.state.trim() : '';
+      if (!code || !state) return json({ error: 'Resposta de autorização incompleta.' }, 400);
+      const requestedRedirect = typeof body.redirectUri === 'string' ? body.redirectUri.trim() : '';
+      if (!requestedRedirect || !/^https:\/\/[\w.-]+(\/[\w\-./%]*)?$/.test(requestedRedirect)) {
+        return json({ error: 'URL de retorno inválida.' }, 400);
+      }
+      const result = await exchangeCodeAndConnect(supabase, code, state, requestedRedirect);
+      if (!result.ok) return json({ error: result.message }, 400);
+      return json({ ok: true });
+    }
+
 
     if (action === 'update_settings') {
       const patch: Record<string, unknown> = {};
