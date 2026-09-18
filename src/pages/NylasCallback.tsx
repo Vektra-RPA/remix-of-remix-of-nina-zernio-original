@@ -38,6 +38,36 @@ const NylasCallback: React.FC = () => {
 
     let cancelled = false;
     const redirectUri = `${window.location.origin}/calendar/callback`;
+
+    // No preview do Lovable a sessão é compartilhada via janela do editor, e um
+    // pop-up não enxerga essa sessão. Então quem troca o código pelo grant é a
+    // janela que abriu esta — ela está logada. Só se não houver opener é que
+    // esta página tenta por conta própria.
+    if (window.opener) {
+      window.opener.postMessage(
+        { type: 'nylas-calendar-oauth-code', code, state, redirectUri },
+        window.location.origin,
+      );
+      setMessage('Confirmando a conexão na janela da Nina...');
+      const onResult = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.data?.type !== 'nylas-calendar-oauth-result') return;
+        if (event.data.ok) {
+          setStatus('success');
+          setMessage('Agenda conectada com sucesso.');
+          window.setTimeout(() => window.close(), 900);
+        } else {
+          setStatus('error');
+          setMessage(event.data.message || 'Não foi possível conectar a agenda.');
+        }
+      };
+      window.addEventListener('message', onResult);
+      return () => {
+        cancelled = true;
+        window.removeEventListener('message', onResult);
+      };
+    }
+
     calendarApi
       .exchangeCode({ code, state, redirectUri })
       .then(() => {
