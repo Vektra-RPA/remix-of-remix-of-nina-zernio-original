@@ -172,6 +172,42 @@ const CalendarSettings: React.FC = () => {
       // Sem origem conhecida a validação não tem como passar: melhor recusar a
       // mensagem do que aceitar qualquer remetente.
       if (!CALLBACK_ORIGIN || event.origin !== CALLBACK_ORIGIN) return;
+
+      // O pop-up não tem sessão no preview (ela é brokered pela janela do
+      // editor), então ele delega a troca do código para cá.
+      if (event.data?.type === 'nylas-calendar-oauth-code') {
+        if (!attemptId.current) return;
+        const source = event.source as Window | null;
+        const reply = (ok: boolean, message?: string) => {
+          try {
+            source?.postMessage({ type: 'nylas-calendar-oauth-result', ok, message }, CALLBACK_ORIGIN);
+          } catch {
+            // Janela já fechada.
+          }
+        };
+        void calendarApi
+          .exchangeCode({
+            code: String(event.data.code),
+            state: String(event.data.state),
+            redirectUri: String(event.data.redirectUri),
+          })
+          .then(() => {
+            finishConnecting();
+            setConnectError(null);
+            toast.success('Agenda conectada.');
+            loadStatus();
+            reply(true);
+          })
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : 'Não foi possível conectar a agenda.';
+            finishConnecting();
+            setConnectError(message);
+            toast.error(message);
+            reply(false, message);
+          });
+        return;
+      }
+
       if (event.data?.type !== 'nylas-calendar-oauth') return;
       // Sem tentativa em curso, a mensagem é de uma janela órfã de antes.
       if (!attemptId.current) return;
