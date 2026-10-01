@@ -546,11 +546,18 @@ async function exchangeCodeAndConnect(
   if (!stateRow) return { ok: false, message: 'A autorização expirou. Tente conectar novamente.' };
 
   const config = nylasConfig();
+  // O token exchange precisa do MESMO client_id usado na URL de autorização.
+  // O /v3/connect/auth usa o Application ID resolvido (resolveApplicationId);
+  // usar config.clientId cru aqui deixaria passar um valor colado errado no
+  // formulário (um grant, por exemplo): a autorização funciona, o grant chega a
+  // ser criado, mas a troca falha com "invalid client" e a conexão nunca é
+  // persistida. Resolver de novo garante a consistência entre as duas etapas.
+  const applicationId = (await resolveApplicationId()) ?? config.clientId;
   const { response, data } = await nylasFetch('/v3/connect/token', {
     method: 'POST',
     body: JSON.stringify({
       code,
-      client_id: config.clientId,
+      client_id: applicationId,
       client_secret: config.apiKey,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
