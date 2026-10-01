@@ -182,6 +182,12 @@ const CONNECTORS_TTL_MS = 5 * 60_000;
 const CONNECTORS_FAILURE_TTL_MS = 30_000;
 let connectorsCache: { providers: string[] | null; at: number } | null = null;
 
+// O Nylas respondeu 401/403 à API Key em uso nesta requisição. Serve para a
+// tela distinguir "ninguém conectou ainda" de "a chave guardada é inválida/
+// expirada" — sem isso o usuário só via um "recusou" genérico no fim do fluxo.
+// Resetado a cada requisição; marcado por nylasFetch.
+let credentialsRejected = false;
+
 function rememberConnectors(providers: string[] | null): string[] | null {
   connectorsCache = { providers, at: Date.now() };
   return providers;
@@ -246,6 +252,9 @@ async function nylasFetch(path: string, init: RequestInit = {}) {
     },
     signal: AbortSignal.timeout(10_000),
   });
+  // 401/403 aqui é sempre credencial recusada (API Key inválida/expirada ou de
+  // outra aplicação): registra para a tela e o connect reagirem com clareza.
+  if (response.status === 401 || response.status === 403) credentialsRejected = true;
   const data = await response.json().catch(() => ({}));
   return { response, data };
 }
@@ -635,6 +644,7 @@ serve(async (req) => {
   await loadStoredCredentials(supabase);
   // Credenciais novas invalidam a lista de provedores em cache.
   connectorsCache = null;
+  credentialsRejected = false;
 
   try {
     // Callback do Hosted OAuth: GET sem Authorization, validado pelo state.
@@ -684,12 +694,17 @@ serve(async (req) => {
       // polling da tela consulta o status de 2 em 2 segundos.
       const providers = config && schemaReady && !alreadyConnected ? await listNylasProviders() : null;
       const noConnector = Array.isArray(providers) && providers.length === 0;
+      // A chave foi recusada pelo Nylas (401/403) ao listar connectors: nenhuma
+      // ação na tela conecta até reconfigurar as credenciais. É diferente de
+      // "sem provedor habilitado" e precisa de mensagem própria.
+      const invalidCredentials = credentialsRejected;
       return json({
         provider: 'nylas',
-        configured: Boolean(config) && schemaReady && !noConnector,
+        configured: Boolean(config) && schemaReady && !noConnector && !invalidCredentials,
         missingConfig: [
           ...(config ? [] : ['credenciais do Nylas']),
           ...(schemaReady ? [] : ['migration da agenda']),
+          ...(invalidCredentials ? ['API Key do Nylas inválida ou expirada (reconfigure em Substituir credenciais)'] : []),
           ...(noConnector ? ['nenhum provedor habilitado no Nylas'] : []),
         ],
         providers,
@@ -830,6 +845,12 @@ serve(async (req) => {
       // A aplicação dona da API Key manda; o valor colado no formulário é só
       // fallback quando a consulta não responde.
       const applicationId = (await resolveApplicationId()) ?? config.clientId;
+      // Se o Nylas recusou a chave, a URL de autorização nasceria com um
+      // client_id de fallback (possivelmente errado) e o fluxo só morreria lá
+      // na frente, com erro genérico. Falha agora, com instrução clara.
+      if (credentialsRejected) {
+        return json({ error: 'A API Key do Nylas foi recusada (401). Gere uma nova em API Keys no painel do Nylas e salve em "Substituir credenciais".' }, 400);
+      }
       authUrl.searchParams.set('client_id', applicationId);
       authUrl.searchParams.set('redirect_uri', requestedRedirect);
       authUrl.searchParams.set('response_type', 'code');
