@@ -125,6 +125,7 @@ serve(async (request) => {
     const webhookBase = `${supabaseUrl}/functions/v1/apollo-phone-webhook?token=${settings.webhook_token ?? ''}`;
     const insertedLeads: Array<{ id: string; contact_id: string | null; phone: string | null }> = [];
     let withPhone = 0;
+    let qualifiedCount = 0;
 
     for (const apolloId of newIds) {
       if (Date.now() - startedAt > MAX_EXECUTION_MS) break;
@@ -140,7 +141,7 @@ serve(async (request) => {
       // deno-lint-ignore no-explicit-any
       const p = person as any;
       const phone = extractPhone(p);
-      const { score, reasons } = scoreLead(p, phone);
+      const { score, reasons, persona, qualified } = scoreLead(p);
       const organization = p.organization ?? {};
 
       const { data: lead, error: leadError } = await service
@@ -167,7 +168,13 @@ serve(async (request) => {
           company_state: organization.state ?? null,
           priority_score: score,
           score_reasons: reasons,
-          status: phone ? 'new' : 'no_phone',
+          // Corte do playbook: só entra quem é P1/P3 E tem score ≥ 60. O resto é
+          // registrado (para dedup e histórico), mas marcado como desqualificado
+          // e não vira contato nem entra em campanha.
+          status: !qualified ? 'disqualified' : (phone ? 'new' : 'no_phone'),
+          disqualify_reason: qualified
+            ? null
+            : (persona === null ? 'Cargo fora do ICP (P1/P3)' : 'Score abaixo de 60'),
           run_id: runId,
           raw: { person: p },
         })
@@ -175,38 +182,43 @@ serve(async (request) => {
         .single();
       if (leadError) continue;
       const leadId = (lead as { id: string }).id;
+      if (qualified) qualifiedCount += 1;
 
-      // Identidade unificada: toda pessoa capturada vira um contato ÚNICO no CRM,
-      // com e-mail + telefone na mesma linha, persona e score — inclusive quando
-      // não há telefone (o lead só-e-mail entra no CRM e aguarda o canal de
-      // e-mail da cadência, em vez de ficar parado como antes).
-      const contactId = await upsertUnifiedContact(service, {
-        email: p.email ?? null,
-        phone,
-        fullName: p.name ?? null,
-        firstName: p.first_name ?? null,
-        title: p.title ?? null,
-        seniority: p.seniority ?? null,
-        companyName: organization.name ?? p.organization_name ?? null,
-        companyDomain: organization.primary_domain ?? organization.website_url ?? null,
-        companyIndustry: organization.industry ?? null,
-        companyEmployees: organization.estimated_num_employees ?? null,
-        linkedinUrl: p.linkedin_url ?? null,
-        emailStatus: p.email_status ?? null,
-        score,
-        scoreReasons: reasons,
-        apolloPersonId: apolloId,
-        origin: 'apollo',
-      });
-      if (contactId) {
-        await service.from('apollo_leads').update({ contact_id: contactId }).eq('id', leadId);
+      // Identidade unificada: toda pessoa QUALIFICADA vira um contato ÚNICO no
+      // CRM, com e-mail + telefone na mesma linha, persona e score — inclusive
+      // quando não há telefone (o lead só-e-mail entra no CRM e aguarda o canal
+      // de e-mail da cadência, em vez de ficar parado como antes).
+      let contactId: string | null = null;
+      if (qualified) {
+        contactId = await upsertUnifiedContact(service, {
+          email: p.email ?? null,
+          phone,
+          fullName: p.name ?? null,
+          firstName: p.first_name ?? null,
+          title: p.title ?? null,
+          seniority: p.seniority ?? null,
+          companyName: organization.name ?? p.organization_name ?? null,
+          companyDomain: organization.primary_domain ?? organization.website_url ?? null,
+          companyIndustry: organization.industry ?? null,
+          companyEmployees: organization.estimated_num_employees ?? null,
+          linkedinUrl: p.linkedin_url ?? null,
+          emailStatus: p.email_status ?? null,
+          score,
+          scoreReasons: reasons,
+          apolloPersonId: apolloId,
+          origin: 'apollo',
+        });
+        if (contactId) {
+          await service.from('apollo_leads').update({ contact_id: contactId }).eq('id', leadId);
+        }
       }
 
       insertedLeads.push({ id: leadId, contact_id: contactId, phone });
       if (phone) withPhone += 1;
 
-      // Sem celular: pede a revelação assíncrona à Apollo (resposta chega no webhook)
-      if (!phone && settings.reveal_phones && settings.webhook_token) {
+      // Sem celular: pede a revelação assíncrona à Apollo só para quem qualifica
+      // (não gasta crédito revelando telefone de lead que não entra no fluxo).
+      if (!phone && qualified && settings.reveal_phones && settings.webhook_token) {
         try {
           await matchPerson(apolloId, webhookBase);
         } catch (error) {
@@ -346,6 +358,7 @@ serve(async (request) => {
       success: true,
       fetched,
       new_leads: insertedLeads.length,
+      qualified: qualifiedCount,
       with_phone: withPhone,
       campaign_id: campaignId,
     });

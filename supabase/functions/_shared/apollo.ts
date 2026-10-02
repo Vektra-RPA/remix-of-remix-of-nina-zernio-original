@@ -3,6 +3,8 @@
  * Nunca chamar api.apollo.io direto: o gateway injeta a chave real.
  */
 
+import { derivePersona, type Persona } from './lead-identity.ts';
+
 const GATEWAY_URL = 'https://connector-gateway.lovable.dev/apollo';
 
 export class ApolloError extends Error {
@@ -113,39 +115,122 @@ export function extractPhone(person: any): string | null {
   return null;
 }
 
-const SENIOR_TITLES = ['ceo', 'chief executive', 'presidente', 'owner', 'founder', 'sócio', 'socio', 'proprietário'];
+// ===== Score do playbook Indústrias v2.2 (Passo 1.4) — 0 a 100, corte ≥ 60 =====
+// Cargo 0–40 · Porte 0–20 · Setor 0–15 · Sinais 0–15 · Região 0–10.
+// Cargo fora de P1/P3 é exclusão automática (playbook: "outros = 0, excluir").
 
-/** Prioridade 0–100: cargo, porte da empresa e qualidade do contato. */
+const PRIORITY_SECTOR_WORDS = [
+  'metalmec', 'metalúrg', 'metalurg', 'metalworking', 'machinery', 'máquina',
+  'maquina', 'mecânic', 'mecanic', 'fabricated metal',
+  'cosmét', 'cosmet', 'cosmetic', 'beauty', 'personal care', 'perfum',
+  'plástic', 'plastic', 'polymer', 'polímero', 'polimero',
+];
+const TRANSFORM_SECTOR_WORDS = [
+  'manufactur', 'indústr', 'industr', 'production', 'produção', 'producao',
+  'fábrica', 'fabrica', 'factory', 'aliment', 'food', 'beverage', 'bebida',
+  'textil', 'textile', 'têxtil', 'químic', 'quimic', 'chemical', 'borracha',
+  'rubber', 'metal', 'móveis', 'moveis', 'furniture', 'papel', 'paper',
+  'embalagem', 'packaging', 'autopeç', 'auto part', 'componentes',
+];
+const ERP_WORDS = ['totvs', 'protheus', 'datasul', 'microsiga', 'senior sistemas', 'sankhya', 'sap', 's/4hana', 'oracle erp'];
+const ISO_LEAN_WORDS = ['iso 9001', 'iso9001', 'iso 14001', 'lean', 'six sigma', 'seis sigma', 'kaizen', 'melhoria contínua', 'melhoria continua', 'continuous improvement', ' wcm'];
+const HIRING_WORDS = ['compras', 'procurement', 'financeiro', 'controladoria', 'controller', 'supply chain', 'planejamento e controle'];
+const FEDERATION_WORDS = ['ciesp', 'fiesp', 'fiep', 'fiesc', 'firjan', 'fieg', 'federação das indústrias', 'federacao das industrias'];
+
+const SUL_STATES = ['pr', 'parana', 'paraná', 'sc', 'santa catarina', 'rs', 'rio grande do sul'];
+const SP_STATES = ['sp', 'sao paulo', 'são paulo'];
+const SP_CAPITAL = ['sao paulo', 'são paulo'];
+
+function norm(value: unknown): string {
+  return String(value ?? '').toLowerCase().trim();
+}
+
+/** Junta os textos da organização disponíveis para detectar setor e sinais. */
 // deno-lint-ignore no-explicit-any
-export function scoreLead(person: any, phone: string | null): { score: number; reasons: string[] } {
+function collectOrgText(person: any): string {
+  const org = person?.organization ?? {};
+  const parts: unknown[] = [
+    org.industry, org.name, org.short_description, org.seo_description,
+    person?.title, person?.headline,
+    ...(Array.isArray(org.keywords) ? org.keywords : []),
+    ...(Array.isArray(org.technology_names) ? org.technology_names : []),
+    ...(Array.isArray(org.industries) ? org.industries : []),
+  ];
+  return parts.map(norm).filter(Boolean).join(' · ');
+}
+
+function scorePorte(employees: number): { points: number; reason: string | null } {
+  if (employees >= 100 && employees <= 300) return { points: 20, reason: 'Porte ideal (100–300 func.)' };
+  if ((employees >= 50 && employees <= 99) || (employees >= 301 && employees <= 500)) {
+    return { points: 12, reason: 'Porte na faixa (50–99 ou 301–500 func.)' };
+  }
+  return { points: 0, reason: null };
+}
+
+function scoreSetor(text: string): { points: number; reason: string | null } {
+  if (PRIORITY_SECTOR_WORDS.some((w) => text.includes(w))) {
+    return { points: 15, reason: 'Setor prioritário (metalmecânico/cosméticos/plásticos)' };
+  }
+  if (TRANSFORM_SECTOR_WORDS.some((w) => text.includes(w))) {
+    return { points: 10, reason: 'Indústria de transformação' };
+  }
+  return { points: 0, reason: null };
+}
+
+function scoreSinais(text: string): { points: number; reasons: string[] } {
   const reasons: string[] = [];
-  let score = 30;
-  const title = String(person?.title ?? '').toLowerCase();
-  if (SENIOR_TITLES.some((word) => title.includes(word))) {
-    score += 25;
-    reasons.push('Cargo de decisão máxima');
-  } else if (title.includes('diretor') || title.includes('director')) {
-    score += 15;
-    reasons.push('Cargo de diretoria');
+  if (ERP_WORDS.some((w) => text.includes(w))) reasons.push('ERP moderno');
+  if (ISO_LEAN_WORDS.some((w) => text.includes(w))) reasons.push('ISO/Lean');
+  if (HIRING_WORDS.some((w) => text.includes(w))) reasons.push('Sinal de compras/financeiro/melhoria');
+  if (FEDERATION_WORDS.some((w) => text.includes(w))) reasons.push('Federação da indústria');
+  const kept = reasons.slice(0, 3); // 5 pontos por sinal, máximo 15
+  return { points: kept.length * 5, reasons: kept };
+}
+
+// deno-lint-ignore no-explicit-any
+function scoreRegiao(person: any): { points: number; reason: string } {
+  const state = norm(person?.state ?? person?.organization?.state);
+  const city = norm(person?.city ?? person?.organization?.city);
+  if (SUL_STATES.includes(state)) return { points: 10, reason: 'Região Sul' };
+  if (SP_STATES.includes(state)) {
+    return SP_CAPITAL.includes(city)
+      ? { points: 5, reason: 'SP (capital)' }
+      : { points: 10, reason: 'Interior de SP' };
   }
+  return { points: 5, reason: 'Fora da região prioritária' };
+}
+
+export interface LeadScore {
+  score: number;
+  reasons: string[];
+  persona: Persona;
+  /** Cargo P1/P3 E total ≥ 60. Cargo fora de P1/P3 nunca qualifica. */
+  qualified: boolean;
+}
+
+/** Score 0–100 conforme o playbook Indústrias v2.2 (Passo 1.4). */
+// deno-lint-ignore no-explicit-any
+export function scoreLead(person: any): LeadScore {
+  const persona = derivePersona(person?.title, person?.seniority);
+  const text = collectOrgText(person);
   const employees = Number(person?.organization?.estimated_num_employees ?? 0);
-  if (employees >= 200) {
-    score += 20;
-    reasons.push('Empresa de grande porte');
-  } else if (employees >= 100) {
-    score += 12;
-    reasons.push('Empresa de porte médio');
-  } else if (employees >= 50) {
-    score += 8;
-    reasons.push('Empresa dentro da faixa alvo');
-  }
-  if (phone) {
-    score += 20;
-    reasons.push('Celular disponível para WhatsApp');
-  }
-  if (person?.email && person?.email_status === 'verified') {
-    score += 10;
-    reasons.push('E-mail verificado');
-  }
-  return { score: Math.min(100, score), reasons };
+
+  const cargoPoints = persona === 'P1' ? 40 : persona === 'P3' ? 35 : 0;
+  const porte = scorePorte(employees);
+  const setor = scoreSetor(text);
+  const sinais = scoreSinais(text);
+  const regiao = scoreRegiao(person);
+
+  const reasons: string[] = [];
+  if (persona === 'P1') reasons.push('Cargo P1 (dono/sócio/CEO) — 40');
+  else if (persona === 'P3') reasons.push('Cargo P3 (diretor adm-financeiro) — 35');
+  else reasons.push('Cargo fora de P1/P3 — exclusão');
+  if (porte.reason) reasons.push(porte.reason);
+  if (setor.reason) reasons.push(setor.reason);
+  reasons.push(...sinais.reasons);
+  reasons.push(regiao.reason);
+
+  const score = Math.min(100, cargoPoints + porte.points + setor.points + sinais.points + regiao.points);
+  const qualified = persona !== null && score >= 60;
+  return { score, reasons, persona, qualified };
 }
