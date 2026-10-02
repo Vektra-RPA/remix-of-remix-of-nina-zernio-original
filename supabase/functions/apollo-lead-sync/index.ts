@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getUserFromToken } from '../_shared/auth.ts';
 import { ApolloError, extractPhone, matchPerson, scoreLead, searchPeople } from '../_shared/apollo.ts';
+import { upsertUnifiedContact } from '../_shared/lead-identity.ts';
 
 /**
  * Captação semanal de leads na Apollo.
@@ -173,8 +174,35 @@ serve(async (request) => {
         .select('id')
         .single();
       if (leadError) continue;
+      const leadId = (lead as { id: string }).id;
 
-      insertedLeads.push({ id: (lead as { id: string }).id, contact_id: null, phone });
+      // Identidade unificada: toda pessoa capturada vira um contato ÚNICO no CRM,
+      // com e-mail + telefone na mesma linha, persona e score — inclusive quando
+      // não há telefone (o lead só-e-mail entra no CRM e aguarda o canal de
+      // e-mail da cadência, em vez de ficar parado como antes).
+      const contactId = await upsertUnifiedContact(service, {
+        email: p.email ?? null,
+        phone,
+        fullName: p.name ?? null,
+        firstName: p.first_name ?? null,
+        title: p.title ?? null,
+        seniority: p.seniority ?? null,
+        companyName: organization.name ?? p.organization_name ?? null,
+        companyDomain: organization.primary_domain ?? organization.website_url ?? null,
+        companyIndustry: organization.industry ?? null,
+        companyEmployees: organization.estimated_num_employees ?? null,
+        linkedinUrl: p.linkedin_url ?? null,
+        emailStatus: p.email_status ?? null,
+        score,
+        scoreReasons: reasons,
+        apolloPersonId: apolloId,
+        origin: 'apollo',
+      });
+      if (contactId) {
+        await service.from('apollo_leads').update({ contact_id: contactId }).eq('id', leadId);
+      }
+
+      insertedLeads.push({ id: leadId, contact_id: contactId, phone });
       if (phone) withPhone += 1;
 
       // Sem celular: pede a revelação assíncrona à Apollo (resposta chega no webhook)
@@ -190,7 +218,7 @@ serve(async (request) => {
     // 3) Leads com telefone ainda sem campanha (inclui os revelados pelo webhook)
     const { data: pending } = await service
       .from('apollo_leads')
-      .select('id, full_name, first_name, phone_number, contact_id, company_name')
+      .select('id, full_name, first_name, phone_number, contact_id, company_name, email, email_status, title, seniority, company_domain, company_industry, company_employees, linkedin_url, priority_score, score_reasons, apollo_person_id')
       .not('phone_number', 'is', null)
       .is('campaign_id', null)
       .in('status', ['new', 'no_phone'])
@@ -200,6 +228,10 @@ serve(async (request) => {
     const readyLeads = (pending ?? []) as Array<{
       id: string; full_name: string | null; first_name: string | null;
       phone_number: string; contact_id: string | null; company_name: string | null;
+      email: string | null; email_status: string | null; title: string | null;
+      seniority: string | null; company_domain: string | null; company_industry: string | null;
+      company_employees: number | null; linkedin_url: string | null;
+      priority_score: number; score_reasons: unknown; apollo_person_id: string;
     }>;
 
     let campaignId: string | null = null;
@@ -213,29 +245,30 @@ serve(async (request) => {
       for (const lead of readyLeads) {
         let contactId = lead.contact_id;
         if (!contactId) {
-          const { data: existing } = await service
-            .from('contacts').select('id, tags').eq('phone_number', lead.phone_number).maybeSingle();
-          if (existing) {
-            contactId = (existing as { id: string }).id;
-            const tags = new Set([...(((existing as { tags: string[] | null }).tags) ?? []), 'apollo']);
-            await service.from('contacts').update({ tags: Array.from(tags) }).eq('id', contactId);
-          } else {
-            const { data: createdContact, error: contactError } = await service
-              .from('contacts')
-              .insert({
-                phone_number: lead.phone_number,
-                name: lead.full_name,
-                call_name: lead.first_name,
-                tags: ['apollo'],
-                notes: lead.company_name ? `Lead Apollo — ${lead.company_name}` : 'Lead Apollo',
-              })
-              .select('id')
-              .single();
-            if (contactError) continue;
-            contactId = (createdContact as { id: string }).id;
-          }
+          // Leads de execuções anteriores (telefone revelado depois pelo webhook)
+          // que ainda não têm contato: unifica agora pelo mesmo caminho, com
+          // e-mail, persona e score — não mais um contato só-telefone.
+          contactId = await upsertUnifiedContact(service, {
+            email: lead.email,
+            phone: lead.phone_number,
+            fullName: lead.full_name,
+            firstName: lead.first_name,
+            title: lead.title,
+            seniority: lead.seniority,
+            companyName: lead.company_name,
+            companyDomain: lead.company_domain,
+            companyIndustry: lead.company_industry,
+            companyEmployees: lead.company_employees,
+            linkedinUrl: lead.linkedin_url,
+            emailStatus: lead.email_status,
+            score: lead.priority_score,
+            scoreReasons: lead.score_reasons,
+            apolloPersonId: lead.apollo_person_id,
+            origin: 'apollo',
+          });
+          if (!contactId) continue;
+          await service.from('apollo_leads').update({ contact_id: contactId }).eq('id', lead.id);
         }
-        await service.from('apollo_leads').update({ contact_id: contactId }).eq('id', lead.id);
         recipients.push({ leadId: lead.id, contactId, phone: lead.phone_number, name: lead.full_name });
       }
 
