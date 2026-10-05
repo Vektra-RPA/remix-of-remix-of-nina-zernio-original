@@ -185,6 +185,26 @@ const registerOptOutTool = {
   },
 };
 
+// LGPD: registra a autorização do lead para continuar a comunicação (playbook
+// Passo 3.3/5.5) como dado auditável. Negar a autorização encerra e suprime.
+const registerConsentTool = {
+  type: "function",
+  function: {
+    name: "register_consent",
+    description: "Registrar a autorização (consentimento LGPD) do lead para continuar a comunicação. Use assim que ele responder ao pedido de autorização: granted=true quando autorizar ('sim', 'pode', 'claro'), granted=false quando negar ('não', 'não quero'). Grava canal, data/hora e a frase do lead. Negar também encerra e suprime o contato. Não proponha reunião nem envie material antes de um granted=true registrado.",
+    parameters: {
+      type: "object",
+      properties: {
+        granted: { type: "boolean", description: "true se o lead autorizou continuar a conversa; false se negou." },
+        channel: { type: "string", description: "Canal onde a autorização ocorreu: 'whatsapp' ou 'email'." },
+        lead_quote: { type: "string", description: "Trecho literal do que o lead respondeu ao pedido de autorização." },
+        request_text: { type: "string", description: "O texto do pedido de autorização que você enviou." },
+      },
+      required: ["granted", "lead_quote"],
+    },
+  },
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -1062,7 +1082,7 @@ async function processQueueItem(
   // habilitar uma ferramenta que o snapshot publicado desabilitou.
   const appointmentPolicy = getActionPolicy(runtimeAgent?.config, 'appointments');
   const handoffPolicy = getActionPolicy(runtimeAgent?.config, 'human_handoff');
-  const extraTools: any[] = [registerOptOutTool];
+  const extraTools: any[] = [registerOptOutTool, registerConsentTool];
   if (appointmentPolicy) extraTools.push(checkAvailabilityTool, createAppointmentTool, rescheduleAppointmentTool, cancelAppointmentTool);
   if (handoffPolicy) extraTools.push(humanHandoffTool);
 
@@ -1152,6 +1172,63 @@ async function processQueueItem(
           return { success: true, status: 'paused', registered_at: now };
         });
         return { result, ok: result.success === true, summary: result.error || 'opt_out_registered' };
+      }
+
+      if (name === 'register_consent') {
+        if (!runtimeAgent) return { result: { success: false, error: 'agent_not_published' }, ok: false };
+        const result = await audit(name, async () => {
+          const now = new Date().toISOString();
+          const currentTags = Array.isArray(conversation.contact?.tags) ? conversation.contact.tags : [];
+          const memory = conversation.contact?.client_memory && typeof conversation.contact.client_memory === 'object'
+            ? conversation.contact.client_memory
+            : {};
+          const leadState = memory.lead_state && typeof memory.lead_state === 'object' ? memory.lead_state : {};
+          const granted = args.granted === true;
+          const consent = {
+            granted,
+            channel: typeof args.channel === 'string' && args.channel ? args.channel : null,
+            lead_quote: typeof args.lead_quote === 'string' ? args.lead_quote.slice(0, 1000) : null,
+            request_text: typeof args.request_text === 'string' ? args.request_text.slice(0, 1000) : null,
+            at: now,
+          };
+          // "Não" ao pedido de autorização = supressão imediata (playbook 5.5).
+          const suppress = !granted;
+          const nextTags = Array.from(new Set([
+            ...currentTags.filter((tag: string) => tag !== 'consent_yes' && tag !== 'consent_no'),
+            granted ? 'consent_yes' : 'consent_no',
+            ...(suppress ? ['opt_out'] : []),
+          ]));
+          const { error: contactError } = await supabase
+            .from('contacts')
+            .update({
+              tags: nextTags,
+              client_memory: {
+                ...memory,
+                consent,
+                ...(suppress ? { opt_out: true, opt_out_at: now, opt_out_reason: 'negou autorização de comunicação' } : {}),
+                lead_state: {
+                  ...leadState,
+                  consent: { value: granted ? 'concedido' : 'negado', status: 'confirmed' },
+                  ...(suppress ? { opt_out: true } : {}),
+                },
+              },
+            })
+            .eq('id', conversation.contact_id);
+          if (contactError) return { success: false, error: contactError.message };
+          if (suppress) {
+            const { error: conversationError } = await supabase
+              .from('conversations')
+              .update({ status: 'paused' })
+              .eq('id', conversation.id);
+            if (conversationError) return { success: false, error: conversationError.message };
+          }
+          return { success: true, granted, suppressed: suppress, registered_at: now };
+        });
+        return {
+          result,
+          ok: result.success === true,
+          summary: result.error || (result.granted ? 'consent_granted' : 'consent_denied'),
+        };
       }
 
       if (name === 'create_appointment') {

@@ -86,6 +86,12 @@ export function buildLeadRuntimeContext(contact: unknown, memory: unknown): stri
 
   if (leadState.handoff_requested === true) lines.push('- Atendimento humano solicitado: sim');
   if (leadState.opt_out === true || safeMemory.opt_out === true) lines.push('- Opt-out registrado: sim — não retomar abordagem comercial');
+  const consent = record(safeMemory.consent);
+  if (consent.granted === true) {
+    lines.push('- Consentimento de comunicação: CONCEDIDO (registrado) — liberado para aprofundar, enviar material e propor reunião');
+  } else if (consent.granted === false) {
+    lines.push('- Consentimento de comunicação: NEGADO — não retomar a abordagem');
+  }
   const summary = escapeRuntimeData(leadState.conversation_summary);
   if (summary) lines.push(`- Resumo factual: ${summary}`);
 
