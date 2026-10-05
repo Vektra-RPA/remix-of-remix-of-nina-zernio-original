@@ -1235,6 +1235,19 @@ async function processQueueItem(
         if (!appointmentPolicy || !runtimeAgent) return { result: { success: false, error: 'action_not_enabled' }, ok: false };
         const validation = validateScheduleRequest(args, appointmentPolicy);
         if (!validation.ok) return { result: { success: false, error: validation.code }, ok: false, summary: validation.code };
+        // LGPD + playbook (6.4): nunca agendar sem o consentimento registrado.
+        // O lead pode ter autorizado na fala, mas precisa estar no CRM antes —
+        // a Lis grava com register_consent e só então agenda.
+        const apptMemory = conversation.contact?.client_memory && typeof conversation.contact.client_memory === 'object'
+          ? conversation.contact.client_memory
+          : {};
+        if (apptMemory?.consent?.granted !== true) {
+          return {
+            result: { success: false, error: 'consent_required', message: 'Registre o consentimento do lead com register_consent antes de agendar.' },
+            ok: false,
+            summary: 'consent_required',
+          };
+        }
         const result = await audit(name, () => createAppointmentFromAI(
           supabase,
           runtimeAgent.workspaceId,
