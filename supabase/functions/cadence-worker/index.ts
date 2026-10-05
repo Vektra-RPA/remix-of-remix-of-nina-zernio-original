@@ -7,6 +7,8 @@ import {
   renderCadenceEmail,
   type CadencePersona,
 } from "../_shared/cadence-templates.ts";
+import { isExcludedEmail } from "../_shared/exclusions.ts";
+import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
 
 // Motor de cadência (porte do src/pipeline/cadencia.py da Lis Python) para edge function.
 // Diferença de arquitetura: o Python roda um worker long-running (loop 30s); aqui é UMA
@@ -137,6 +139,7 @@ async function ensureEmailConversation(supabase: SupabaseClient, contactId: stri
     .from('conversations')
     .select('id')
     .eq('contact_id', contactId)
+    .eq('channel', 'email')
     .eq('is_active', true)
     .maybeSingle();
   if (existing?.id) return existing.id;
@@ -171,9 +174,42 @@ async function callEmailSend(body: Record<string, unknown>): Promise<SendResult>
   }
 }
 
+/**
+ * Toque de WhatsApp da cadência (D3/D9) via template Meta aprovado. Só envia se o
+ * template do step estiver configurado por env (CADENCE_WA_TEMPLATE_STEP{n}) e o
+ * contato tiver telefone; senão devolve {sent:false} e o worker pula o step.
+ * Usa enqueueTemplateForContact (mesma fila do whatsapp-sender) — a função
+ * whatsapp-template-send exige token de usuário e não serve para o cron.
+ */
+async function trySendWhatsapp(supabase: SupabaseClient, contact: Contact, step: number): Promise<{ sent: boolean; reason: string }> {
+  const template = (Deno.env.get(`CADENCE_WA_TEMPLATE_STEP${step}`) || '').trim();
+  if (!template) return { sent: false, reason: 'whatsapp não configurado (template Meta pendente)' };
+  if (!contact.phone_number) return { sent: false, reason: 'sem telefone' };
+  const language = (Deno.env.get('CADENCE_WA_LANGUAGE') || 'pt_BR').trim();
+  const vars = renderVars(contact);
+  try {
+    await enqueueTemplateForContact(supabase, {
+      contact: { id: contact.id, name: contact.name ?? null, call_name: contact.call_name ?? null, phone_number: contact.phone_number },
+      name: template,
+      language,
+      bodyText: '',
+      params: ['{{contact.name}}', vars.empresa],
+    });
+    fetch(`${supabaseUrl}/functions/v1/whatsapp-sender`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ triggered_by: 'cadence-worker' }),
+    }).catch(() => {});
+    return { sent: true, reason: '' };
+  } catch (e) {
+    return { sent: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Matricula um contato na cadência (idempotente via índice único contact_id,step). */
 async function enrollContact(supabase: SupabaseClient, contact: Contact): Promise<boolean> {
   if (!contact.email || !personaOf(contact) || isSuppressed(contact) || hasReplied(contact)) return false;
+  if (isExcludedEmail(contact.email)) return false; // domínio próprio / cliente ativo
   const now = Date.now();
   const rows = ENABLED_STEPS.map((s) => ({
     contact_id: contact.id,
@@ -194,14 +230,14 @@ async function enrollContact(supabase: SupabaseClient, contact: Contact): Promis
 async function autoEnroll(supabase: SupabaseClient, limit: number): Promise<number> {
   const { data: candidates } = await supabase
     .from('contacts')
-    .select('id, email, name, call_name, tags, client_memory')
+    .select('id, email, name, call_name, phone_number, tags, client_memory')
     .contains('tags', ['apollo'])
     .not('email', 'is', null)
     .limit(limit * 3);
   let enrolled = 0;
   for (const c of (candidates ?? [])) {
     if (enrolled >= limit) break;
-    if (isSuppressed(c) || hasReplied(c) || !personaOf(c)) continue;
+    if (isSuppressed(c) || hasReplied(c) || !personaOf(c) || isExcludedEmail(c.email)) continue;
     const { data: existing } = await supabase.from('cadence_state').select('id').eq('contact_id', c.id).limit(1);
     if (Array.isArray(existing) && existing.length) continue;
     if (await enrollContact(supabase, c)) enrolled += 1;
@@ -256,7 +292,7 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
 
     const { data: contact } = await supabase
       .from('contacts')
-      .select('id, email, name, call_name, tags, client_memory')
+      .select('id, email, name, call_name, phone_number, tags, client_memory')
       .eq('id', item.contact_id)
       .maybeSingle();
     if (!contact) { await markStep(supabase, item.id, 'cancelled', 'contato removido'); continue; }
@@ -268,11 +304,17 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
       continue;
     }
 
-    // WhatsApp ainda não ligado (template Meta pendente): pula o step sem travar a cadência.
+    // Toque de WhatsApp (D3/D9): envia via template Meta se configurado; senão pula.
     if (item.channel !== 'email') {
-      await markStep(supabase, item.id, 'skipped', 'whatsapp ainda não configurado');
+      const wa = await trySendWhatsapp(supabase, contact, item.step);
+      if (wa.sent) {
+        await supabase.from('cadence_state').update({ status: 'sent', sent_at: new Date().toISOString(), last_error: null }).eq('id', item.id);
+        sent += 1;
+      } else {
+        await markStep(supabase, item.id, 'skipped', wa.reason);
+        skipped += 1;
+      }
       await anchorNext(supabase, contact.id, item.step);
-      skipped += 1;
       continue;
     }
 

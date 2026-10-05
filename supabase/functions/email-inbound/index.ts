@@ -134,17 +134,19 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
     return json({ ok: true, ignored: 'contato não encontrado', email });
   }
 
-  // Conversa de e-mail do contato (reaproveita a ativa; senão cria channel='email').
+  // Conversa de e-mail do contato (channel='email' — separada de uma eventual de
+  // WhatsApp — para a Lis responder pelo canal certo).
   let { data: conversation } = await supabase
     .from('conversations')
     .select('id, status, metadata')
     .eq('contact_id', contact.id)
+    .eq('channel', 'email')
     .eq('is_active', true)
     .maybeSingle();
   if (!conversation) {
     const { data: created, error } = await supabase
       .from('conversations')
-      .insert({ contact_id: contact.id, channel: 'email', status: 'human', is_active: true })
+      .insert({ contact_id: contact.id, channel: 'email', status: 'nina', is_active: true })
       .select('id, status, metadata')
       .single();
     if (error) return json({ error: `falha ao criar conversa: ${error.message}` }, 500);
@@ -152,7 +154,7 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
   }
 
   // Registra a mensagem recebida.
-  const { error: msgError } = await supabase.from('messages').insert({
+  const { data: inserted, error: msgError } = await supabase.from('messages').insert({
     conversation_id: conversation.id,
     from_type: 'user',
     type: 'text',
@@ -167,14 +169,13 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
       in_reply_to: inbound.inReplyTo,
       references: inbound.references,
     },
-  });
+  }).select('id').maybeSingle();
   if (msgError) console.error('[email-inbound] registro da mensagem falhou', msgError.message ?? msgError);
 
-  // Regra dura do playbook: qualquer resposta pausa a automação. A conversa vai para
-  // atendimento humano porque a Lis ainda não responde por e-mail automaticamente
-  // (fila do orquestrador é WhatsApp; channel-aware é o próximo wiring).
+  // Regra dura do playbook: qualquer resposta pausa a automação (cancela a cadência).
+  // A conversa segue com a Nina, que responde por e-mail (orquestrador channel-aware).
   await supabase.from('conversations').update({
-    status: 'human',
+    status: 'nina',
     is_active: true,
     last_message_at: new Date().toISOString(),
     metadata: { ...record(conversation.metadata), last_email_subject: inbound.subject, last_email_message_id: inbound.messageId },
@@ -190,7 +191,26 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
 
   await cancelarCadencia(supabase, contact.id);
 
-  return json({ ok: true, contact_id: contact.id, conversation_id: conversation.id, paused_cadence: true, status: 'human' });
+  // Encaminha para a Nina processar e responder por e-mail (mesma fila do WhatsApp).
+  const messageId = (inserted as { id?: string } | null)?.id ?? null;
+  if (messageId) {
+    await supabase.from('nina_processing_queue').insert({
+      message_id: messageId,
+      conversation_id: conversation.id,
+      contact_id: contact.id,
+      priority: 1,
+      context_data: { channel: 'email', subject: inbound.subject },
+    });
+    const trigger = fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/nina-orchestrator`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ triggered_by: 'email-inbound' }),
+    }).catch((e) => console.error('[email-inbound] trigger do orquestrador falhou', e));
+    // deno-lint-ignore no-explicit-any
+    (globalThis as any).EdgeRuntime?.waitUntil?.(trigger);
+  }
+
+  return json({ ok: true, contact_id: contact.id, conversation_id: conversation.id, paused_cadence: true, status: 'nina', queued: !!messageId });
 }
 
 serve(async (req) => {

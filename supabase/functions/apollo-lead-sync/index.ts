@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getUserFromToken } from '../_shared/auth.ts';
 import { ApolloError, extractPhone, matchPerson, scoreLead, searchPeople } from '../_shared/apollo.ts';
 import { upsertUnifiedContact } from '../_shared/lead-identity.ts';
+import { isExcludedDomain, isExcludedEmail } from '../_shared/exclusions.ts';
 
 /**
  * Captação semanal de leads na Apollo.
@@ -143,6 +144,10 @@ serve(async (request) => {
       const phone = extractPhone(p);
       const { score, reasons, persona, qualified } = scoreLead(p);
       const organization = p.organization ?? {};
+      // Exclusão (playbook): não prospectar domínio próprio nem cliente ativo.
+      const excluded = isExcludedEmail(p.email)
+        || isExcludedDomain(organization.primary_domain ?? organization.website_url ?? null);
+      const admitted = qualified && !excluded;
 
       const { data: lead, error: leadError } = await service
         .from('apollo_leads')
@@ -171,10 +176,12 @@ serve(async (request) => {
           // Corte do playbook: só entra quem é P1/P3 E tem score ≥ 60. O resto é
           // registrado (para dedup e histórico), mas marcado como desqualificado
           // e não vira contato nem entra em campanha.
-          status: !qualified ? 'disqualified' : (phone ? 'new' : 'no_phone'),
-          disqualify_reason: qualified
+          status: !admitted ? 'disqualified' : (phone ? 'new' : 'no_phone'),
+          disqualify_reason: admitted
             ? null
-            : (persona === null ? 'Cargo fora do ICP (P1/P3)' : 'Score abaixo de 60'),
+            : (excluded
+              ? 'Domínio próprio ou cliente ativo'
+              : (persona === null ? 'Cargo fora do ICP (P1/P3)' : 'Score abaixo de 60')),
           run_id: runId,
           raw: { person: p },
         })
@@ -182,14 +189,14 @@ serve(async (request) => {
         .single();
       if (leadError) continue;
       const leadId = (lead as { id: string }).id;
-      if (qualified) qualifiedCount += 1;
+      if (admitted) qualifiedCount += 1;
 
-      // Identidade unificada: toda pessoa QUALIFICADA vira um contato ÚNICO no
+      // Identidade unificada: toda pessoa ADMITIDA vira um contato ÚNICO no
       // CRM, com e-mail + telefone na mesma linha, persona e score — inclusive
       // quando não há telefone (o lead só-e-mail entra no CRM e aguarda o canal
       // de e-mail da cadência, em vez de ficar parado como antes).
       let contactId: string | null = null;
-      if (qualified) {
+      if (admitted) {
         contactId = await upsertUnifiedContact(service, {
           email: p.email ?? null,
           phone,
@@ -218,7 +225,7 @@ serve(async (request) => {
 
       // Sem celular: pede a revelação assíncrona à Apollo só para quem qualifica
       // (não gasta crédito revelando telefone de lead que não entra no fluxo).
-      if (!phone && qualified && settings.reveal_phones && settings.webhook_token) {
+      if (!phone && admitted && settings.reveal_phones && settings.webhook_token) {
         try {
           await matchPerson(apolloId, webhookBase);
         } catch (error) {

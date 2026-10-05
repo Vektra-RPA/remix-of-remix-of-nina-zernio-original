@@ -986,6 +986,35 @@ async function handoffConversationFromAI(
   return { success: true, handoff: data, reason: args.reason };
 }
 
+/**
+ * Resposta por e-mail: a Lis responde pelo canal de e-mail (email-send) em vez da
+ * fila do WhatsApp. Assunto e threading vêm do último e-mail do lead (gravados em
+ * conversations.metadata pelo email-inbound). Prioritário: resposta a lead fura o
+ * rate limit, como no envio prioritário do enviar.py.
+ */
+// deno-lint-ignore no-explicit-any
+async function sendEmailReply(supabase: any, conversation: any, _message: any, aiContent: string): Promise<void> {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const to = conversation.contact?.email;
+  if (!to) { console.error('[Nina] resposta por e-mail sem endereço do contato'); return; }
+  const meta = conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
+  const base = typeof meta.last_email_subject === 'string' && meta.last_email_subject ? meta.last_email_subject : 'nossa conversa';
+  const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
+  const inReplyTo = typeof meta.last_email_message_id === 'string' ? meta.last_email_message_id : null;
+  try {
+    const resp = await fetch(`${supabaseUrl}/functions/v1/email-send`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${supabaseServiceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, text: aiContent, conversationId: conversation.id, inReplyTo, priority: true }),
+    });
+    if (!resp.ok) console.error('[Nina] email-send falhou:', resp.status, await resp.text().catch(() => ''));
+    else console.log('[Nina] resposta enviada por e-mail para', to);
+  } catch (err) {
+    console.error('[Nina] erro ao enviar resposta por e-mail:', err);
+  }
+}
+
 async function processQueueItem(
   supabase: any,
   lovableApiKey: string,
@@ -1405,6 +1434,12 @@ async function processQueueItem(
   const delayMax = settings?.response_delay_max || 3000;
   const delay = Math.random() * (delayMax - delayMin) + delayMin;
 
+  // E-mail: a Lis responde pelo canal de e-mail (email-send). Guardado por channel
+  // para o caminho WhatsApp (áudio + send_queue + whatsapp-sender) seguir idêntico.
+  if (conversation.channel === 'email') {
+    await sendEmailReply(supabase, conversation, message, aiContent);
+  } else {
+
   // Check if audio response should be sent - pure mirroring: only respond with audio if incoming was audio
   const incomingWasAudio = message.type === 'audio';
   const shouldSendAudio = incomingWasAudio && settings?.elevenlabs_api_key;
@@ -1475,6 +1510,7 @@ async function processQueueItem(
   } catch (err) {
     console.error('[Nina] Failed to trigger whatsapp-sender:', err);
   }
+  } // fim do ramo WhatsApp (conversation.channel !== 'email')
 
   // Trigger analyze-conversation
   fetch(`${supabaseUrl}/functions/v1/analyze-conversation`, {

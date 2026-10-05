@@ -9,16 +9,18 @@ export interface CadenceStepDef {
   tipo: string;
   channel: 'email' | 'whatsapp';
   offsetDays: number;
-  // WhatsApp fica desligado até o template da Meta ser aprovado/ligado (dependência do time).
-  // Com só os e-mails ativos a cadência já roda: D0, D6, D13.
+  // Todos os steps são matriculados; o worker decide no envio. Os toques de
+  // WhatsApp (D3/D9) só saem quando o template Meta estiver configurado por env
+  // (CADENCE_WA_TEMPLATE_STEP{n}); sem isso o worker pula o step sem travar a
+  // cadência. `enabled:false` tira o step da matrícula por completo (reserva).
   enabled: boolean;
 }
 
 export const CADENCE_STEPS: CadenceStepDef[] = [
   { step: 1, tipo: 'abertura',  channel: 'email',    offsetDays: 0,  enabled: true },
-  { step: 2, tipo: 'followup1', channel: 'whatsapp', offsetDays: 3,  enabled: false },
+  { step: 2, tipo: 'followup1', channel: 'whatsapp', offsetDays: 3,  enabled: true },
   { step: 3, tipo: 'followup2', channel: 'email',    offsetDays: 6,  enabled: true },
-  { step: 4, tipo: 'followup3', channel: 'whatsapp', offsetDays: 9,  enabled: false },
+  { step: 4, tipo: 'followup3', channel: 'whatsapp', offsetDays: 9,  enabled: true },
   { step: 5, tipo: 'breakup',   channel: 'email',    offsetDays: 13, enabled: true },
 ];
 
