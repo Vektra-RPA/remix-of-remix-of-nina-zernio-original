@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutDashboard, MessageSquare, Users, Settings as SettingsIcon, LogOut, ShieldCheck, Calendar, Kanban, LifeBuoy, Building2, Megaphone, Target } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Users, Settings as SettingsIcon, LogOut, ShieldCheck, Calendar, Kanban, LifeBuoy, Building2, Megaphone, Target, Gauge } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useCompanySettings } from '@/hooks/useCompanySettings';
 import { useAuth } from '@/hooks/useAuth';
@@ -14,6 +14,7 @@ import './Sidebar.css';
 
 const menuItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'pilot', label: 'Piloto', icon: Gauge },
   { id: 'pipeline', label: 'Pipeline', icon: Kanban },
   { id: 'chat', label: 'Chat ao vivo', icon: MessageSquare },
   { id: 'contacts', label: 'Contatos', icon: Users },

@@ -41,7 +41,15 @@ create trigger trg_cadence_state_updated_at
   before update on public.cadence_state
   for each row execute function public.touch_cadence_state_updated_at();
 
--- RLS ligado e sem policy permissiva: só a service role (edge functions) acessa.
--- Quando o painel (Épico H) precisar ler, adicionar uma policy de SELECT para
--- usuários do workspace.
+-- RLS ligado: a service role (edge functions) ignora RLS e faz a escrita.
 alter table public.cadence_state enable row level security;
+
+-- Épico H — Painel do piloto: usuários autenticados leem o estado da cadência
+-- (só leitura; escrita continua exclusiva da service role). O piloto roda num
+-- único workspace, por isso a leitura é liberada para qualquer autenticado.
+drop policy if exists "cadence_state_select_authenticated" on public.cadence_state;
+create policy "cadence_state_select_authenticated"
+  on public.cadence_state
+  for select
+  to authenticated
+  using (true);

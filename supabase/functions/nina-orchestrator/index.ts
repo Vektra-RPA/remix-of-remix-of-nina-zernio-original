@@ -1015,6 +1015,87 @@ async function sendEmailReply(supabase: any, conversation: any, _message: any, a
   }
 }
 
+/**
+ * Alerta de escalada (playbook Passo 7.x — "quando a Lis não sabe responder").
+ * Quando a conversa é transferida para humano (human_handoff), avisa o time
+ * responsável (a Elisandra no piloto) por e-mail interno, com o contexto do lead.
+ * Canal: e-mail interno via email-send (modo internal) — não depende de template
+ * da Meta e já está pronto. Destinatários em ESCALATION_ALERT_EMAILS (lista
+ * separada por vírgula). A conversa é marcada como já alertada para não repetir.
+ */
+// deno-lint-ignore no-explicit-any
+async function notifyEscalation(
+  supabase: any,
+  conversation: any,
+  args: { reason?: string; summary?: string },
+): Promise<void> {
+  const recipients = (Deno.env.get('ESCALATION_ALERT_EMAILS') || Deno.env.get('ESCALATION_ALERT_EMAIL') || '')
+    .split(',').map((s) => s.trim()).filter((s) => s.includes('@'));
+  if (recipients.length === 0) {
+    console.log('[Nina] handoff sem ESCALATION_ALERT_EMAILS configurado — alerta não enviado');
+    return;
+  }
+
+  // Lê a metadata FRESCA (o handoff acabou de gravar metadata.handoff; a cópia em
+  // memória é anterior). Evita (a) re-alertar a mesma escalada e (b) sobrescrever
+  // o que o handoff gravou.
+  const { data: fresh } = await supabase
+    .from('conversations').select('metadata').eq('id', conversation.id).maybeSingle();
+  const meta = fresh?.metadata && typeof fresh.metadata === 'object' ? fresh.metadata : {};
+  const escalation = meta.escalation && typeof meta.escalation === 'object' ? meta.escalation : null;
+  if (escalation?.alerted_at) return;
+
+  const contact = conversation.contact || {};
+  const memory = contact.client_memory && typeof contact.client_memory === 'object' ? contact.client_memory : {};
+  const apollo = memory.apollo && typeof memory.apollo === 'object' ? memory.apollo : {};
+  const leadState = memory.lead_state && typeof memory.lead_state === 'object' ? memory.lead_state : {};
+  const nome = contact.name || contact.call_name || contact.phone_number || contact.email || 'Lead sem nome';
+  const companyFromState = leadState.company && typeof leadState.company === 'object' ? (leadState.company as any).value : null;
+  const empresa = apollo.company || companyFromState || '—';
+  const persona = apollo.persona || '—';
+  const score = apollo.score ?? '—';
+  const canal = conversation.channel === 'email' ? 'E-mail' : 'WhatsApp';
+  const contato = [contact.phone_number, contact.email].filter(Boolean).join(' · ') || '—';
+  const resumo = args.summary || leadState.conversation_summary || '—';
+  const motivo = args.reason || '—';
+
+  const subject = `🔔 A Lis precisa de você — ${nome}${empresa !== '—' ? ` (${empresa})` : ''}`;
+  const text = [
+    'A Lis transferiu uma conversa para atendimento humano.',
+    '',
+    `Lead: ${nome}`,
+    `Empresa: ${empresa}`,
+    `Persona / Score: ${persona} · ${score}`,
+    `Canal: ${canal}`,
+    `Contato: ${contato}`,
+    '',
+    `Motivo: ${motivo}`,
+    `Resumo da Lis: ${resumo}`,
+    '',
+    'Abra a aba "Chat ao vivo" da Nina para assumir. A conversa está marcada como atendimento humano e a cadência foi pausada.',
+  ].join('\n');
+
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const resp = await fetch(`${supabaseUrl}/functions/v1/email-send`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ internal: true, to: recipients, subject, text }),
+    });
+    if (!resp.ok) console.error('[Nina] alerta de escalada falhou:', resp.status, await resp.text().catch(() => ''));
+    else console.log('[Nina] alerta de escalada enviado para', recipients.join(', '));
+  } catch (err) {
+    console.error('[Nina] erro ao enviar alerta de escalada:', err);
+  }
+
+  // Marca como alertada preservando o resto da metadata (inclusive o handoff).
+  const { error } = await supabase.from('conversations').update({
+    metadata: { ...meta, escalation: { ...(escalation || {}), alerted_at: new Date().toISOString(), recipients } },
+  }).eq('id', conversation.id);
+  if (error) console.error('[Nina] marcar escalada alertada falhou:', error.message ?? error);
+}
+
 async function processQueueItem(
   supabase: any,
   lovableApiKey: string,
@@ -1116,6 +1197,8 @@ async function processQueueItem(
   if (handoffPolicy) extraTools.push(humanHandoffTool);
 
   let appointmentCreated: any = null;
+  // Args do handoff capturados no handler, usados depois para o alerta de escalada.
+  let handoffArgs: { reason?: string; summary?: string } | null = null;
 
   const agentResult = await runNinaAgent({
     supabase,
@@ -1322,6 +1405,7 @@ async function processQueueItem(
         const result = await audit(name, () => handoffConversationFromAI(
           supabase, runtimeAgent.workspaceId, conversation, args
         ));
+        if (result.success === true) handoffArgs = { reason: args.reason, summary: args.summary };
         return { result, ok: result.success === true, summary: result.error || 'human_handoff_completed' };
       }
       return { result: { erro: `Ferramenta desconhecida: ${name}` }, ok: false };
@@ -1428,6 +1512,18 @@ async function processQueueItem(
     },
   });
   if (runtimeEventError) console.error('[Nina] Failed to persist runtime observability:', runtimeEventError);
+
+  // Alerta de escalada: a Lis transferiu para humano → avisa o time (Elisandra no
+  // piloto). Não bloqueia a resposta ao lead; roda em background quando o runtime
+  // suporta, senão aguarda (é rápido e a escalada é rara).
+  if (handoffObserved) {
+    const escalationTask = notifyEscalation(supabase, conversation, handoffArgs || {});
+    if ((globalThis as any).EdgeRuntime?.waitUntil) {
+      (globalThis as any).EdgeRuntime.waitUntil(escalationTask);
+    } else {
+      await escalationTask.catch((e) => console.error('[Nina] alerta de escalada:', e));
+    }
+  }
 
   // Add response delay if configured
   const delayMin = settings?.response_delay_min || 1000;

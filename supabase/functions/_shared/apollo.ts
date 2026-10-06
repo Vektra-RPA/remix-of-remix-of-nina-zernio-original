@@ -193,9 +193,12 @@ function scoreRegiao(person: any): { points: number; reason: string } {
   const city = norm(person?.city ?? person?.organization?.city);
   if (SUL_STATES.includes(state)) return { points: 10, reason: 'Região Sul' };
   if (SP_STATES.includes(state)) {
-    return SP_CAPITAL.includes(city)
-      ? { points: 5, reason: 'SP (capital)' }
-      : { points: 10, reason: 'Interior de SP' };
+    if (SP_CAPITAL.includes(city)) return { points: 5, reason: 'SP (capital)' };
+    // "Interior de SP" (10) só com cidade conhecida e fora da capital. Sem cidade
+    // não dá para afirmar interior — crédito conservador (5), igual à capital, pra
+    // não inflar o score de um lead que pode estar na Grande SP.
+    if (city) return { points: 10, reason: 'Interior de SP' };
+    return { points: 5, reason: 'SP (cidade não informada)' };
   }
   return { points: 5, reason: 'Fora da região prioritária' };
 }

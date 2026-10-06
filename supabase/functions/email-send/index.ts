@@ -214,8 +214,12 @@ serve(async (req) => {
       ? (html.includes(unsub) ? html : `${html}\n<p style="color:#8a94a6;font-size:12px">—<br>${escapeHtml(unsub)}</p>`)
       : null;
 
-    // Threading: mantém o fio do e-mail (mesma thread que o lead respondeu).
-    const headers: Record<string, string> = {};
+    // Threading: Message-ID próprio (controlado por nós) para os steps da cadência
+    // poderem encadear uns nos outros, além de manter o fio quando o lead responde.
+    // O Resend geraria um Message-ID, mas não o devolve — por isso definimos o nosso.
+    const domain = cfg.fromEmail.split('@')[1] || 'trajetoriaconsultoria.com.br';
+    const rfcMessageId = `<${crypto.randomUUID()}@${domain}>`;
+    const headers: Record<string, string> = { 'Message-ID': rfcMessageId };
     if (inReplyTo) {
       headers['In-Reply-To'] = inReplyTo;
       headers['References'] = references ? `${references} ${inReplyTo}`.trim() : inReplyTo;
@@ -242,6 +246,7 @@ serve(async (req) => {
           to,
           subject,
           resend_id: result.id,
+          message_id: rfcMessageId,
           in_reply_to: inReplyTo,
           references,
           priority,
@@ -251,7 +256,7 @@ serve(async (req) => {
       .maybeSingle();
     if (insertError) console.error('[email-send] registro em messages falhou', insertError.message ?? insertError);
 
-    return json({ ok: true, id: result.id, messageId: (inserted as { id?: string } | null)?.id ?? null });
+    return json({ ok: true, id: result.id, messageId: (inserted as { id?: string } | null)?.id ?? null, rfcMessageId });
   } catch (error) {
     console.error('[email-send] Error:', error);
     return json({ error: error instanceof Error ? error.message : 'Erro interno' }, 500);

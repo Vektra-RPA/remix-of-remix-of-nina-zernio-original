@@ -152,7 +152,7 @@ async function ensureEmailConversation(supabase: SupabaseClient, contactId: stri
   return (created as { id: string }).id;
 }
 
-type SendResult = { ok: boolean; rateLimited: boolean; error: string | null };
+type SendResult = { ok: boolean; rateLimited: boolean; error: string | null; rfcMessageId: string | null };
 
 async function callEmailSend(body: Record<string, unknown>): Promise<SendResult> {
   try {
@@ -163,14 +163,14 @@ async function callEmailSend(body: Record<string, unknown>): Promise<SendResult>
     });
     const data = await resp.json().catch(() => ({}));
     if (resp.status === 429 || (data as { code?: string }).code === 'rate_limited') {
-      return { ok: false, rateLimited: true, error: (data as { error?: string }).error ?? 'rate_limited' };
+      return { ok: false, rateLimited: true, error: (data as { error?: string }).error ?? 'rate_limited', rfcMessageId: null };
     }
     if (!resp.ok || (data as { error?: string }).error) {
-      return { ok: false, rateLimited: false, error: (data as { error?: string }).error ?? `email-send ${resp.status}` };
+      return { ok: false, rateLimited: false, error: (data as { error?: string }).error ?? `email-send ${resp.status}`, rfcMessageId: null };
     }
-    return { ok: true, rateLimited: false, error: null };
+    return { ok: true, rateLimited: false, error: null, rfcMessageId: (data as { rfcMessageId?: string }).rfcMessageId ?? null };
   } catch (e) {
-    return { ok: false, rateLimited: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, rateLimited: false, error: e instanceof Error ? e.message : String(e), rfcMessageId: null };
   }
 }
 
@@ -325,7 +325,14 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     const conversationId = await ensureEmailConversation(supabase, contact.id);
     if (!conversationId) { await markStep(supabase, item.id, 'pending', 'sem conversa'); errors += 1; continue; }
 
-    const res = await callEmailSend({ to: contact.email, subject: tpl.subject, text: tpl.body, conversationId });
+    // Threading forte: encadeia este e-mail no anterior da cadência (Message-ID
+    // guardado em lead_state.email_thread). O 1º e-mail (abertura) não tem âncora.
+    const thread = record(record(contact.client_memory).lead_state).email_thread;
+    const threadRec = record(thread);
+    const inReplyTo = typeof threadRec.last_message_id === 'string' ? threadRec.last_message_id : undefined;
+    const references = typeof threadRec.references === 'string' ? threadRec.references : undefined;
+
+    const res = await callEmailSend({ to: contact.email, subject: tpl.subject, text: tpl.body, conversationId, inReplyTo, references });
     if (res.rateLimited) {
       await supabase.from('cadence_state').update({ status: 'pending' }).eq('id', item.id); // volta pra fila
       rateLimited = true;
@@ -338,6 +345,15 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     }
     await supabase.from('cadence_state').update({ status: 'sent', sent_at: new Date().toISOString(), last_error: null }).eq('id', item.id);
     sent += 1;
+    // Guarda o Message-ID como âncora do próximo step (preserva o fio da thread).
+    if (res.rfcMessageId) {
+      const mem = record(contact.client_memory);
+      const ls = record(mem.lead_state);
+      const newRefs = references ? `${references} ${res.rfcMessageId}` : res.rfcMessageId;
+      await supabase.from('contacts').update({
+        client_memory: { ...mem, lead_state: { ...ls, email_thread: { last_message_id: res.rfcMessageId, references: newRefs } } },
+      }).eq('id', contact.id);
+    }
     await anchorNext(supabase, contact.id, item.step);
   }
 

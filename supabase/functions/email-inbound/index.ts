@@ -55,6 +55,74 @@ function firstString(...values: unknown[]): string | null {
   return null;
 }
 
+// ===== Verificação de assinatura svix (Resend assina os webhooks com svix) =====
+// Mantém o segredo compartilhado (?secret=/header) como fallback para forwarders
+// que não assinam (ex.: Cloudflare Email Routing). Com RESEND_WEBHOOK_SECRET no
+// formato whsec_... e os headers svix presentes, a assinatura é verificada.
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function verifySvix(secret: string, headers: Headers, rawBody: string): Promise<boolean> {
+  try {
+    const id = headers.get('svix-id');
+    const ts = headers.get('svix-timestamp');
+    const sigHeader = headers.get('svix-signature');
+    if (!id || !ts || !sigHeader) return false;
+    // Tolerância de 5 min no timestamp (anti-replay), como o SDK do svix.
+    const tsNum = Number(ts);
+    if (Number.isFinite(tsNum) && Math.abs(Date.now() / 1000 - tsNum) > 300) return false;
+    const secretB64 = secret.startsWith('whsec_') ? secret.slice(6) : secret;
+    const key = await crypto.subtle.importKey(
+      'raw', base64ToBytes(secretB64) as unknown as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+    );
+    const signed = new TextEncoder().encode(`${id}.${ts}.${rawBody}`) as unknown as BufferSource;
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, signed));
+    const expected = bytesToBase64(mac);
+    // Header: "v1,<b64> v1,<b64> ..." — aceita se qualquer assinatura casar.
+    const provided = sigHeader.split(' ').map((p) => (p.includes(',') ? p.split(',')[1] : p));
+    return provided.some((p) => timingSafeEqualStr(p, expected));
+  } catch (e) {
+    console.error('[email-inbound] verificação svix falhou', e);
+    return false;
+  }
+}
+
+/**
+ * Detecta auto-resposta de ausência (OOO) para a Lis não entrar em robô-com-robô:
+ * um "estou de férias" não é resposta do lead — não pausa a cadência nem vira
+ * atendimento. Sinais: cabeçalhos Auto-Submitted/X-Autoreply/Precedence e assunto.
+ */
+function isAutoReply(body: Record<string, unknown>, subject: string | null): boolean {
+  const data = record(body.data);
+  const src = Object.keys(data).length ? data : body;
+  const headers = record(src.headers);
+  const h = (k: string) => String(headers[k] ?? headers[k.toLowerCase()] ?? '').toLowerCase().trim();
+  const autoSubmitted = h('auto-submitted');
+  if (autoSubmitted && autoSubmitted !== 'no') return true;
+  if (h('x-autoreply') || h('x-autorespond') || h('x-auto-response-suppress')) return true;
+  if (h('precedence') === 'auto_reply') return true;
+  const subj = (subject ?? '').toLowerCase();
+  return /out of office|automatic reply|auto.?reply|automatic response|aus[êe]ncia|ausente|resposta autom|fora do escrit|de f[ée]rias|on vacation|away from (my )?(desk|office)|afastad/.test(subj);
+}
+
 type Inbound = {
   from: string | null;
   subject: string | null;
@@ -217,17 +285,32 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Método não permitido' }, 405);
 
+  // Corpo cru primeiro: a verificação svix assina o texto exato recebido.
+  const rawBody = await req.text();
+
+  // Autorização: assinatura svix (Resend) quando configurada; senão, segredo
+  // compartilhado (?secret=/header) para forwarders que não assinam.
   const secret = Deno.env.get('RESEND_WEBHOOK_SECRET') || '';
-  const url = new URL(req.url);
-  const provided = url.searchParams.get('secret') || req.headers.get('x-webhook-secret') || '';
-  if (!secret || provided !== secret) return json({ error: 'Não autorizado' }, 401);
+  if (!secret) return json({ error: 'Webhook não configurado (RESEND_WEBHOOK_SECRET ausente).' }, 401);
+  const hasSvix = !!req.headers.get('svix-id') && !!req.headers.get('svix-signature');
+  let authorized = false;
+  if (hasSvix && secret.startsWith('whsec_')) {
+    authorized = await verifySvix(secret, req.headers, rawBody);
+  } else {
+    const url = new URL(req.url);
+    const provided = url.searchParams.get('secret') || req.headers.get('x-webhook-secret') || '';
+    authorized = provided === secret;
+  }
+  if (!authorized) return json({ error: 'Não autorizado' }, 401);
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, serviceKey);
 
   try {
-    const body = record(await req.json().catch(() => ({})));
+    let parsed: unknown = {};
+    try { parsed = rawBody ? JSON.parse(rawBody) : {}; } catch { parsed = {}; }
+    const body = record(parsed);
 
     // Evento de entrega/bounce/complaint do Resend.
     const eventType = typeof body.type === 'string' ? body.type : '';
@@ -238,6 +321,14 @@ serve(async (req) => {
     // Caso contrário, tratamos como e-mail recebido (resposta de lead).
     const inbound = extractInbound(body);
     if (!inbound.from) return json({ error: 'Payload não reconhecido (sem remetente).' }, 422);
+
+    // Auto-resposta de ausência (OOO): não é resposta do lead. Registra e ignora
+    // sem pausar a cadência nem acionar a Lis (evita robô-com-robô).
+    if (isAutoReply(body, inbound.subject)) {
+      console.log('[email-inbound] auto-resposta (OOO) ignorada:', inbound.from, '—', inbound.subject);
+      return json({ ok: true, ignored: 'auto-reply (OOO)', from: inbound.from });
+    }
+
     return await handleInboundReply(supabase, inbound);
   } catch (error) {
     console.error('[email-inbound] Error:', error);

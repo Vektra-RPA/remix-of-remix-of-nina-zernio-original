@@ -12,6 +12,7 @@ import Help from './components/Help';
 import SystemRoadmap from './components/SystemRoadmap';
 import Dispatch from './pages/Dispatch';
 import Leads from './pages/Leads';
+import Pilot from './pages/Pilot';
 import Auth from './pages/Auth';
 import NylasCallback from './pages/NylasCallback';
 
@@ -87,6 +88,7 @@ const App: React.FC = () => {
             }>
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/pilot" element={<Pilot />} />
               <Route path="/pipeline" element={<Kanban />} />
               <Route path="/chat" element={<ChatInterface />} />
               <Route path="/training" element={<Navigate to="/settings?section=knowledge" replace />} />
