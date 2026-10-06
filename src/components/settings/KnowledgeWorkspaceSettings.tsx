@@ -115,6 +115,7 @@ export default function KnowledgeWorkspaceSettings({ editable, updateConfigAndSa
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchSummary, setSearchSummary] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -388,6 +389,19 @@ export default function KnowledgeWorkspaceSettings({ editable, updateConfigAndSa
     }
   };
 
+  const loadPlaybook = async () => {
+    setSeeding(true);
+    try {
+      const res = await knowledgeApi.seedPlaybookKnowledge();
+      toast.success(`Conteúdo do playbook carregado: ${res.facts} informações e ${res.documents} materiais.`);
+      await load();
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Não foi possível carregar o conteúdo do playbook.');
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   const testSearch = async () => {
     if (!searchQuery.trim()) return;
     setSearching(true);
@@ -425,7 +439,10 @@ export default function KnowledgeWorkspaceSettings({ editable, updateConfigAndSa
             <h2 className="mt-1 text-xl font-semibold text-foreground">O que a agente pode afirmar com segurança</h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Fontes aprovadas, separadas por tipo e com pendências explícitas. A agente nunca escolhe silenciosamente entre informações conflitantes.</p>
           </div>
-          <Button variant="primary" onClick={() => setFactsOpen(true)} disabled={!editable}><Plus className="h-4 w-4" />Nova informação</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => void loadPlaybook()} disabled={!editable || seeding} title="Carrega descrições, casos e checklists aprovados do Playbook Indústrias v2.2">{seeding ? <Loader2 className="h-4 w-4 animate-spin" /> : <BookOpen className="h-4 w-4" />}Carregar conteúdo do playbook</Button>
+            <Button variant="primary" onClick={() => setFactsOpen(true)} disabled={!editable}><Plus className="h-4 w-4" />Nova informação</Button>
+          </div>
         </div>
         <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard label="Informações confirmadas" value={confirmedFacts.length} icon={CheckCircle2} />

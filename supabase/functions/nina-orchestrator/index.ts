@@ -21,6 +21,7 @@ import {
 } from "../_shared/action-policy.ts";
 import { redactSensitiveText, redactSensitiveValue } from "../_shared/privacy.ts";
 import { consumeRateLimit, RateLimitError } from "../_shared/rate-limit.ts";
+import { buildHandoffPackage } from "../_shared/handoff-package.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -731,6 +732,24 @@ async function createAppointmentFromAI(
     }
   }
   
+  // Pacote de passagem (Passo 6.4): anexa a ficha ao agendamento para o Fabiano
+  // entrar preparado. Leitura best-effort — falha aqui não impede o agendamento.
+  let handoffPackage: string | null = null;
+  let routing: unknown = null;
+  try {
+    const [{ data: contactRow }, { data: conversationRow }] = await Promise.all([
+      supabase.from('contacts').select('name, call_name, phone_number, email, client_memory').eq('id', contactId).maybeSingle(),
+      supabase.from('conversations').select('channel').eq('id', conversationId).maybeSingle(),
+    ]);
+    if (contactRow) {
+      const pkg = buildHandoffPackage({ contact: contactRow, conversation: conversationRow || {}, memory: contactRow.client_memory });
+      handoffPackage = pkg.markdown;
+      routing = pkg.routing;
+    }
+  } catch (e) {
+    console.error('[Nina] montar pacote de passagem no agendamento falhou:', e);
+  }
+
   const insertData: any = {
     workspace_id: workspaceId,
     title: args.title,
@@ -738,14 +757,16 @@ async function createAppointmentFromAI(
     time: args.time,
     duration: args.duration || 60,
     type: args.type,
-    description: args.description || null,
+    description: args.description || handoffPackage || null,
     contact_id: contactId,
     status: 'scheduled',
     metadata: {
       source: 'nina_ai',
       conversation_id: conversationId,
       source_message_id: sourceMessageId,
-      created_at_conversation: new Date().toISOString()
+      created_at_conversation: new Date().toISOString(),
+      handoff_package: handoffPackage,
+      routing,
     }
   };
   
@@ -946,6 +967,13 @@ async function handoffConversationFromAI(
   conversation: any,
   args: { reason: string; summary: string },
 ): Promise<any> {
+  // Pacote de passagem (Passo 6.4) + roteamento (Passo 6.3), montado do que já
+  // está no CRM, para a equipe assumir sem repetir pergunta que a Lis já fez.
+  const pkg = buildHandoffPackage({
+    contact: conversation.contact,
+    conversation,
+    memory: conversation.contact?.client_memory,
+  });
   const { data, error } = await supabase
     .from('conversations')
     .update({
@@ -956,6 +984,8 @@ async function handoffConversationFromAI(
           workspace_id: workspaceId,
           reason: args.reason,
           summary: args.summary,
+          package: pkg.markdown,
+          routing: pkg.routing,
           requested_at: new Date().toISOString(),
           requested_by: 'nina_ai',
         },
@@ -978,12 +1008,14 @@ async function handoffConversationFromAI(
           ...leadState,
           handoff_requested: true,
           conversation_summary: args.summary || leadState.conversation_summary || '',
+          handoff_package: pkg.markdown,
+          routing: pkg.routing,
         },
       },
     })
     .eq('id', conversation.contact_id);
   if (memoryError) return { success: false, error: memoryError.message };
-  return { success: true, handoff: data, reason: args.reason };
+  return { success: true, handoff: data, reason: args.reason, routing: pkg.routing };
 }
 
 /**
@@ -1048,29 +1080,22 @@ async function notifyEscalation(
   const contact = conversation.contact || {};
   const memory = contact.client_memory && typeof contact.client_memory === 'object' ? contact.client_memory : {};
   const apollo = memory.apollo && typeof memory.apollo === 'object' ? memory.apollo : {};
-  const leadState = memory.lead_state && typeof memory.lead_state === 'object' ? memory.lead_state : {};
   const nome = contact.name || contact.call_name || contact.phone_number || contact.email || 'Lead sem nome';
-  const companyFromState = leadState.company && typeof leadState.company === 'object' ? (leadState.company as any).value : null;
-  const empresa = apollo.company || companyFromState || '—';
-  const persona = apollo.persona || '—';
-  const score = apollo.score ?? '—';
-  const canal = conversation.channel === 'email' ? 'E-mail' : 'WhatsApp';
+  const empresa = apollo.company || '';
   const contato = [contact.phone_number, contact.email].filter(Boolean).join(' · ') || '—';
-  const resumo = args.summary || leadState.conversation_summary || '—';
   const motivo = args.reason || '—';
 
-  const subject = `🔔 A Lis precisa de você — ${nome}${empresa !== '—' ? ` (${empresa})` : ''}`;
+  // Pacote de passagem completo (Passo 6.4) — a ficha que o time recebe.
+  const pkg = buildHandoffPackage({ contact, conversation, memory });
+
+  const subject = `🔔 A Lis precisa de você — ${nome}${empresa ? ` (${empresa})` : ''}`;
   const text = [
     'A Lis transferiu uma conversa para atendimento humano.',
     '',
-    `Lead: ${nome}`,
-    `Empresa: ${empresa}`,
-    `Persona / Score: ${persona} · ${score}`,
-    `Canal: ${canal}`,
+    `Motivo: ${motivo}`,
     `Contato: ${contato}`,
     '',
-    `Motivo: ${motivo}`,
-    `Resumo da Lis: ${resumo}`,
+    pkg.markdown,
     '',
     'Abra a aba "Chat ao vivo" da Nina para assumir. A conversa está marcada como atendimento humano e a cadência foi pausada.',
   ].join('\n');

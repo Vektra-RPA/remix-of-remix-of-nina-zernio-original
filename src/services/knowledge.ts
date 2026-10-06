@@ -1,6 +1,7 @@
 import { supabase } from '@/integrations/supabase/client';
 import { currentWorkspaceId } from './workspace';
 import { chunkContent } from '@/domain/knowledge';
+import { PLAYBOOK_FACTS, PLAYBOOK_DOCUMENTS, PLAYBOOK_SOURCE } from '@/data/playbookKnowledge';
 
 export { chunkContent, parseFaqPairs } from '@/domain/knowledge';
 
@@ -539,6 +540,28 @@ export const knowledgeApi = {
         .join(' · ');
       throw new Error(`Falhas ao salvar ${failed.map((group) => group.label).join(' e ')}: ${details}`);
     }
+  },
+
+  // ---- Conteúdo aprovado do playbook (Épico E) ----
+  // Carrega descrições de oferta, casos (Anexo B) e checklists do Playbook v2.2.
+  // Idempotente: fatos deduplicam por título+conteúdo e materiais pelo fingerprint,
+  // então repetir a ação não cria duplicatas. Passa pela ingestão real (indexação),
+  // não por SQL cru.
+  async seedPlaybookKnowledge(): Promise<{ facts: number; documents: number }> {
+    for (const f of PLAYBOOK_FACTS) {
+      await knowledgeApi.createFact({
+        title: f.title,
+        category: f.category,
+        question: f.question ?? null,
+        fact: f.fact,
+        source: PLAYBOOK_SOURCE,
+        always_include: f.always_include ?? false,
+      });
+    }
+    for (const d of PLAYBOOK_DOCUMENTS) {
+      await knowledgeApi.createDocument({ title: d.title, content: d.content, doc_type: 'texto' });
+    }
+    return { facts: PLAYBOOK_FACTS.length, documents: PLAYBOOK_DOCUMENTS.length };
   },
 
   // ---- Busca (preview do que a Nina encontra) ----

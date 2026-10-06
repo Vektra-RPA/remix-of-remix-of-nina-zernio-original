@@ -103,6 +103,7 @@ const Pilot: React.FC = () => {
                     </p>
                     <p className="text-sm text-muted-foreground">{e.motivo}</p>
                     {e.resumo !== '—' && <p className="text-xs text-muted-foreground mt-1">Resumo: {e.resumo}</p>}
+                    {e.routing && <p className="text-xs text-muted-foreground mt-1">Encaminhar para: <span className="text-foreground font-medium">{e.routing}</span></p>}
                     <p className="text-xs text-muted-foreground mt-1">{e.canal} · {e.contato} · {fmtDate(e.requestedAt)}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

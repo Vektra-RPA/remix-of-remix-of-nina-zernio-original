@@ -26,6 +26,7 @@ export interface PilotEscalation {
   motivo: string;
   resumo: string;
   contato: string;
+  routing: string | null;
   requestedAt: string | null;
   alerted: boolean;
 }
@@ -119,6 +120,7 @@ export const pilotApi = {
       const meta = record(conv.metadata);
       const handoff = record(meta.handoff);
       const escalation = record(meta.escalation);
+      const routing = record(handoff.routing);
       const contact = record(conv.contact);
       const memory = record(contact.client_memory);
       return {
@@ -129,6 +131,7 @@ export const pilotApi = {
         motivo: (typeof handoff.reason === 'string' && handoff.reason) || '—',
         resumo: (typeof handoff.summary === 'string' && handoff.summary) || '—',
         contato: [contact.phone_number, contact.email].filter(Boolean).join(' · ') || '—',
+        routing: (typeof routing.linha === 'string' && routing.linha) || null,
         requestedAt: (typeof handoff.requested_at === 'string' && handoff.requested_at) || conv.last_message_at || null,
         alerted: Boolean(escalation.alerted_at),
       };
