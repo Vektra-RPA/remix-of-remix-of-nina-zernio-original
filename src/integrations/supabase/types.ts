@@ -1109,6 +1109,63 @@ export type Database = {
           },
         ]
       }
+      cadence_state: {
+        Row: {
+          channel: string
+          contact_id: string
+          created_at: string
+          id: string
+          last_error: string | null
+          scheduled_at: string
+          sent_at: string | null
+          status: string
+          step: number
+          tipo: string
+          updated_at: string
+        }
+        Insert: {
+          channel?: string
+          contact_id: string
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          scheduled_at: string
+          sent_at?: string | null
+          status?: string
+          step: number
+          tipo: string
+          updated_at?: string
+        }
+        Update: {
+          channel?: string
+          contact_id?: string
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          scheduled_at?: string
+          sent_at?: string | null
+          status?: string
+          step?: number
+          tipo?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cadence_state_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cadence_state_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts_with_stats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       calendar_integrations: {
         Row: {
           access_token: string | null
