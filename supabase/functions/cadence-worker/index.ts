@@ -175,6 +175,33 @@ async function callEmailSend(body: Record<string, unknown>): Promise<SendResult>
 }
 
 /**
+ * Monta os parâmetros do template de WhatsApp conforme o template escolhido — cada
+ * template aprovado tem um número diferente de variáveis. A ordem/os campos vêm de
+ * CADENCE_WA_PARAMS_STEP{n} (ex.: "name,title,company,company" para o
+ * lis_abordagem_inicial, que usa {{1}} nome, {{2}} cargo, {{3}} e {{4}} empresa).
+ * Tokens: name/nome, title/cargo, company/empresa, phone/telefone. Valores sempre
+ * não-vazios (a Meta recusa parâmetro vazio). Assim dá para trocar de template só
+ * mexendo no env, sem alterar código.
+ */
+function buildWaParams(step: number, contact: Contact, vars: { nome: string; empresa: string }): string[] {
+  const spec = (Deno.env.get(`CADENCE_WA_PARAMS_STEP${step}`) || 'name,company').trim();
+  const apollo = record(record(contact.client_memory).apollo);
+  const cargo = (typeof apollo.title === 'string' && apollo.title.trim())
+    || (typeof apollo.seniority === 'string' && apollo.seniority.trim())
+    || 'diretoria';
+  const resolve = (key: string): string => {
+    switch (key.trim().toLowerCase()) {
+      case 'name': case 'nome': return vars.nome;
+      case 'title': case 'cargo': return cargo;
+      case 'company': case 'empresa': return vars.empresa;
+      case 'phone': case 'telefone': return contact.phone_number || vars.empresa;
+      default: return key; // valor literal
+    }
+  };
+  return spec.split(',').map((k) => k.trim()).filter(Boolean).map(resolve);
+}
+
+/**
  * Toque de WhatsApp da cadência (D3/D9) via template Meta aprovado. Só envia se o
  * template do step estiver configurado por env (CADENCE_WA_TEMPLATE_STEP{n}) e o
  * contato tiver telefone; senão devolve {sent:false} e o worker pula o step.
@@ -193,7 +220,7 @@ async function trySendWhatsapp(supabase: SupabaseClient, contact: Contact, step:
       name: template,
       language,
       bodyText: '',
-      params: ['{{contact.name}}', vars.empresa],
+      params: buildWaParams(step, contact, vars),
     });
     fetch(`${supabaseUrl}/functions/v1/whatsapp-sender`, {
       method: 'POST',
