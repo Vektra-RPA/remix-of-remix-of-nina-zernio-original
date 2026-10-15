@@ -233,10 +233,48 @@ async function trySendWhatsapp(supabase: SupabaseClient, contact: Contact, step:
   }
 }
 
+/** Domínio da empresa do contato (chave de agrupamento): domínio do e-mail ou o da Apollo. */
+function companyDomainOf(contact: Contact): string | null {
+  const email = typeof contact.email === 'string' ? contact.email.trim().toLowerCase() : '';
+  const at = email.lastIndexOf('@');
+  if (at > 0) return email.slice(at + 1);
+  const apollo = record(record(contact.client_memory).apollo);
+  return typeof apollo.company_domain === 'string' && apollo.company_domain ? apollo.company_domain.toLowerCase() : null;
+}
+
+/**
+ * Playbook 1.2 (regra de conta): no máximo 1 contato por empresa em sequência ativa.
+ * Ninguém recebe mensagens de duas pessoas da mesma empresa ao mesmo tempo — a outra
+ * persona só entra depois. Agrupa pelo domínio do e-mail.
+ */
+async function companyHasActiveSequence(supabase: SupabaseClient, contact: Contact): Promise<boolean> {
+  const domain = companyDomainOf(contact);
+  if (!domain) return false; // sem domínio não há como agrupar — não bloqueia
+  const { data: peers } = await supabase
+    .from('contacts')
+    .select('id')
+    .ilike('email', `%@${domain}`)
+    .neq('id', contact.id)
+    .limit(100);
+  const ids = (peers ?? []).map((p: { id: string }) => p.id);
+  if (ids.length === 0) return false;
+  const { data: active } = await supabase
+    .from('cadence_state')
+    .select('contact_id')
+    .in('contact_id', ids)
+    .in('status', ['pending', 'sending'])
+    .limit(1);
+  return Array.isArray(active) && active.length > 0;
+}
+
 /** Matricula um contato na cadência (idempotente via índice único contact_id,step). */
 async function enrollContact(supabase: SupabaseClient, contact: Contact): Promise<boolean> {
   if (!contact.email || !personaOf(contact) || isSuppressed(contact) || hasReplied(contact)) return false;
   if (isExcludedEmail(contact.email)) return false; // domínio próprio / cliente ativo
+  if (await companyHasActiveSequence(supabase, contact)) {
+    console.log('[cadence] já há contato da mesma empresa em sequência ativa — não matricula', contact.id);
+    return false;
+  }
   const now = Date.now();
   const rows = ENABLED_STEPS.map((s) => ({
     contact_id: contact.id,
@@ -272,6 +310,73 @@ async function autoEnroll(supabase: SupabaseClient, limit: number): Promise<numb
   return enrolled;
 }
 
+/**
+ * Lembrete de reunião por WhatsApp (template utilitário aprovado — ex.:
+ * lis_lembrete_reuniao_v1). Opt-in: só roda com CADENCE_REMINDER_WA_TEMPLATE setado.
+ * Envia um lembrete único (marca appointments.metadata.reminded) para reuniões que
+ * acontecem nas próximas CADENCE_REMINDER_HOURS (default 24h). As variáveis vêm de
+ * CADENCE_REMINDER_PARAMS (tokens: name, company, datetime, time). Roda fora da janela
+ * da cadência porque está atrelado à hora da reunião, não ao disparo frio.
+ */
+async function runReminders(supabase: SupabaseClient): Promise<Record<string, unknown>> {
+  const template = (Deno.env.get('CADENCE_REMINDER_WA_TEMPLATE') || '').trim();
+  if (!template) return {};
+  const HOUR_MS = 3_600_000;
+  const hours = Math.max(1, Number(Deno.env.get('CADENCE_REMINDER_HOURS') || '24'));
+  const language = (Deno.env.get('CADENCE_WA_LANGUAGE') || 'pt_BR').trim();
+  const spec = (Deno.env.get('CADENCE_REMINDER_PARAMS') || 'name,datetime').trim();
+
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const horizonStr = new Date(now.getTime() + hours * HOUR_MS).toISOString().slice(0, 10);
+
+  const { data: appts } = await supabase
+    .from('appointments')
+    .select('id, date, time, metadata, contact:contacts(id, name, call_name, phone_number, client_memory)')
+    .eq('status', 'scheduled')
+    .gte('date', todayStr)
+    .lte('date', horizonStr)
+    .limit(100);
+
+  let remindersSent = 0, remindersSkipped = 0;
+  for (const appt of (appts ?? [])) {
+    const meta = record(appt.metadata);
+    const contact: Contact = record(appt.contact);
+    if (meta.reminded === true || !contact.phone_number) { remindersSkipped += 1; continue; }
+    const when = new Date(`${appt.date}T${String(appt.time || '09:00').slice(0, 5)}:00-03:00`);
+    const diffMs = when.getTime() - now.getTime();
+    if (diffMs <= 0 || diffMs > hours * HOUR_MS) { remindersSkipped += 1; continue; }
+    const vars = renderVars(contact);
+    const opts = { timeZone: 'America/Sao_Paulo' } as const;
+    const dtLabel = when.toLocaleString('pt-BR', { ...opts, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const params = spec.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean).map((k) => {
+      switch (k) {
+        case 'name': case 'nome': return vars.nome;
+        case 'company': case 'empresa': return vars.empresa;
+        case 'datetime': case 'data': return dtLabel;
+        case 'time': case 'hora': return when.toLocaleTimeString('pt-BR', { ...opts, hour: '2-digit', minute: '2-digit' });
+        default: return k;
+      }
+    });
+    try {
+      await enqueueTemplateForContact(supabase, {
+        contact: { id: contact.id, name: contact.name ?? null, call_name: contact.call_name ?? null, phone_number: contact.phone_number },
+        name: template, language, bodyText: '', params,
+      });
+      fetch(`${supabaseUrl}/functions/v1/whatsapp-sender`, {
+        method: 'POST', headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ triggered_by: 'cadence-reminder' }),
+      }).catch(() => {});
+      await supabase.from('appointments').update({ metadata: { ...meta, reminded: true, reminded_at: new Date().toISOString() } }).eq('id', appt.id);
+      remindersSent += 1;
+    } catch (e) {
+      console.error('[cadence] lembrete falhou', e instanceof Error ? e.message : String(e));
+      remindersSkipped += 1;
+    }
+  }
+  return { remindersSent, remindersSkipped };
+}
+
 async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown>> {
   // 1) Reclaim de órfãos presos em 'sending' (passada anterior morreu / cron sobrepôs).
   await supabase
@@ -280,8 +385,11 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     .eq('status', 'sending')
     .lt('updated_at', new Date(Date.now() - ORPHAN_MS).toISOString());
 
-  // 2) Janela útil.
-  if (!withinWindow()) return { skipped: 'fora da janela útil (9-17h, dia útil)' };
+  // Lembretes de reunião — rodam sempre (ligados à hora da reunião, não à janela fria).
+  const reminders = await runReminders(supabase);
+
+  // 2) Janela útil (só para os toques frios da cadência).
+  if (!withinWindow()) return { skipped: 'fora da janela útil (9-17h, dia útil)', ...reminders };
 
   // 3) Auto-matrícula de novos qualificados.
   const enrolled = await autoEnroll(supabase, ENROLL_PER_RUN);
@@ -384,7 +492,7 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     await anchorNext(supabase, contact.id, item.step);
   }
 
-  return { enrolled, sent, skipped, errors, rateLimited };
+  return { enrolled, sent, skipped, errors, rateLimited, ...reminders };
 }
 
 serve(async (req) => {

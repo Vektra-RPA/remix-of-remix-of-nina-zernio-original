@@ -22,6 +22,8 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from "../_shared/privacy.ts";
 import { consumeRateLimit, RateLimitError } from "../_shared/rate-limit.ts";
 import { buildHandoffPackage } from "../_shared/handoff-package.ts";
+import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
+import { upsertUnifiedContact } from "../_shared/lead-identity.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -202,6 +204,28 @@ const registerConsentTool = {
         request_text: { type: "string", description: "O texto do pedido de autorização que você enviou." },
       },
       required: ["granted", "lead_quote"],
+    },
+  },
+};
+
+// Playbook 5.4 ("Não sou eu, fale com [pessoa]"): registra a indicação e cria o
+// contato indicado marcado para o time dar o primeiro toque (não entra na cadência
+// fria — indicação é um toque diferente).
+const registerReferralTool = {
+  type: "function",
+  function: {
+    name: "register_referral",
+    description: "Registrar uma indicação quando o lead disser que não é a pessoa certa e apontar outra ('fale com X'). Guarda quem foi indicado (nome e, se o lead informar, cargo, e-mail e/ou telefone) e cria o novo contato marcado como indicação para o time dar o primeiro toque. Use só quando o lead indicar explicitamente outra pessoa.",
+    parameters: {
+      type: "object",
+      properties: {
+        referred_name: { type: "string", description: "Nome da pessoa indicada." },
+        referred_role: { type: "string", description: "Cargo ou área da pessoa indicada, se o lead disser." },
+        referred_email: { type: "string", description: "E-mail da pessoa indicada, se o lead informar." },
+        referred_phone: { type: "string", description: "Telefone da pessoa indicada, se o lead informar." },
+        confirmation_evidence: { type: "string", description: "Trecho literal recente em que o lead indicou a outra pessoa." },
+      },
+      required: ["referred_name", "confirmation_evidence"],
     },
   },
 };
@@ -736,11 +760,15 @@ async function createAppointmentFromAI(
   // entrar preparado. Leitura best-effort — falha aqui não impede o agendamento.
   let handoffPackage: string | null = null;
   let routing: unknown = null;
+  let contactRow: any = null;
+  let conversationRow: any = null;
   try {
-    const [{ data: contactRow }, { data: conversationRow }] = await Promise.all([
+    const [contactRes, conversationRes] = await Promise.all([
       supabase.from('contacts').select('name, call_name, phone_number, email, client_memory').eq('id', contactId).maybeSingle(),
       supabase.from('conversations').select('channel').eq('id', conversationId).maybeSingle(),
     ]);
+    contactRow = contactRes.data;
+    conversationRow = conversationRes.data;
     if (contactRow) {
       const pkg = buildHandoffPackage({ contact: contactRow, conversation: conversationRow || {}, memory: contactRow.client_memory });
       handoffPackage = pkg.markdown;
@@ -788,6 +816,43 @@ async function createAppointmentFromAI(
 
   await syncAppointmentToExternalCalendar(data.id);
   console.log('[Nina] Appointment created successfully:', data.id);
+
+  // Confirmação de reunião por WhatsApp (template utilitário aprovado — ex.:
+  // lis_confirmaca_reuniao_v1). Opt-in por env CONFIRM_WA_TEMPLATE, e só quando a
+  // conversa é WhatsApp e há telefone — numa conversa de e-mail a própria Lis já
+  // confirma em texto. Best-effort (não derruba o agendamento).
+  try {
+    const confirmTemplate = (Deno.env.get('CONFIRM_WA_TEMPLATE') || '').trim();
+    const phone = contactRow?.phone_number;
+    if (confirmTemplate && phone && conversationRow?.channel !== 'email') {
+      const nome = (contactRow?.call_name || contactRow?.name || '').trim() || 'tudo bem';
+      const brDate = typeof args.date === 'string' ? args.date.split('-').reverse().join('/') : args.date;
+      const hora = typeof args.time === 'string' ? args.time.slice(0, 5) : args.time;
+      const quando = `${brDate} às ${hora}`;
+      const spec = (Deno.env.get('CONFIRM_WA_PARAMS') || 'name,datetime').trim();
+      const params = spec.split(',').map((k: string) => k.trim().toLowerCase()).filter(Boolean).map((k: string) => {
+        if (k === 'name' || k === 'nome') return nome;
+        if (k === 'datetime' || k === 'data') return quando;
+        return k;
+      });
+      await enqueueTemplateForContact(supabase, {
+        contact: { id: contactId, name: contactRow?.name ?? null, call_name: contactRow?.call_name ?? null, phone_number: phone },
+        name: confirmTemplate,
+        language: (Deno.env.get('CADENCE_WA_LANGUAGE') || 'pt_BR').trim(),
+        bodyText: '',
+        params,
+      });
+      const supabaseUrl2 = Deno.env.get('SUPABASE_URL')!;
+      const serviceKey2 = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+      fetch(`${supabaseUrl2}/functions/v1/whatsapp-sender`, {
+        method: 'POST', headers: { Authorization: `Bearer ${serviceKey2}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ triggered_by: 'appointment-confirmation' }),
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.error('[Nina] confirmação de reunião por WhatsApp falhou:', e);
+  }
+
   return { success: true, appointment: data };
 }
 
@@ -1217,7 +1282,7 @@ async function processQueueItem(
   // habilitar uma ferramenta que o snapshot publicado desabilitou.
   const appointmentPolicy = getActionPolicy(runtimeAgent?.config, 'appointments');
   const handoffPolicy = getActionPolicy(runtimeAgent?.config, 'human_handoff');
-  const extraTools: any[] = [registerOptOutTool, registerConsentTool];
+  const extraTools: any[] = [registerOptOutTool, registerConsentTool, registerReferralTool];
   if (appointmentPolicy) extraTools.push(checkAvailabilityTool, createAppointmentTool, rescheduleAppointmentTool, cancelAppointmentTool);
   if (handoffPolicy) extraTools.push(humanHandoffTool);
 
@@ -1276,6 +1341,53 @@ async function processQueueItem(
           ok: false,
           summary: 'explicit_confirmation_required',
         };
+      }
+
+      if (name === 'register_referral') {
+        const result = await audit(name, async () => {
+          const referredName = typeof args.referred_name === 'string' ? args.referred_name.trim() : '';
+          if (!referredName) return { success: false, error: 'referred_name_required' };
+          const referredEmail = typeof args.referred_email === 'string' ? args.referred_email.trim() : '';
+          const referredPhone = typeof args.referred_phone === 'string' ? args.referred_phone.trim() : '';
+          const referredRole = typeof args.referred_role === 'string' ? args.referred_role.trim() : '';
+          const now = new Date().toISOString();
+          const curMem = conversation.contact?.client_memory && typeof conversation.contact.client_memory === 'object' ? conversation.contact.client_memory : {};
+          const apollo = curMem.apollo && typeof curMem.apollo === 'object' ? curMem.apollo : {};
+          const companyName = typeof apollo.company === 'string' && apollo.company ? apollo.company : null;
+          const referrerName = conversation.contact?.name || conversation.contact?.call_name || null;
+
+          // 1) Registra a indicação na memória do contato atual (auditoria).
+          const referrals = Array.isArray(curMem.referrals) ? curMem.referrals : [];
+          await supabase.from('contacts').update({
+            client_memory: { ...curMem, referrals: [...referrals, { name: referredName, role: referredRole || null, email: referredEmail || null, phone: referredPhone || null, at: now }] },
+          }).eq('id', conversation.contact_id);
+
+          // 2) Com e-mail ou telefone, cria/atualiza o contato indicado, marcado como
+          //    'referral' (não entra na cadência fria — o time dá o toque de indicação).
+          let newContactId: string | null = null;
+          if (referredEmail || referredPhone) {
+            newContactId = await upsertUnifiedContact(supabase, {
+              email: referredEmail || null,
+              phone: referredPhone || null,
+              fullName: referredName,
+              title: referredRole || null,
+              companyName,
+              origin: 'referral',
+            });
+            if (newContactId) {
+              const { data: created } = await supabase.from('contacts').select('tags, client_memory, notes').eq('id', newContactId).maybeSingle();
+              const tags = Array.isArray(created?.tags) ? created.tags : [];
+              const mem2 = created?.client_memory && typeof created.client_memory === 'object' ? created.client_memory : {};
+              await supabase.from('contacts').update({
+                tags: Array.from(new Set([...tags, 'referral'])),
+                client_memory: { ...mem2, referred_by: { contact_id: conversation.contact_id, name: referrerName, at: now } },
+                notes: created?.notes || `Indicado por ${referrerName || 'um contato'}`,
+              }).eq('id', newContactId);
+            }
+          }
+          return { success: true, referred: referredName, new_contact_id: newContactId, needs_human_followup: !newContactId };
+        });
+        return { result, ok: result.success === true, summary: result.error || 'referral_registered' };
       }
 
       if (name === 'register_opt_out') {

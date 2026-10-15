@@ -85,25 +85,31 @@ type ContactRow = {
 const CONTACT_COLS = 'id, email, phone_number, name, call_name, tags, client_memory';
 
 /**
- * Procura o contato por e-mail (identidade mais estável) e, se não achar, por
- * telefone. Não funde dois contatos distintos: se e-mail e telefone apontarem
- * para registros diferentes, prevalece o do e-mail (o cruzamento desses casos
- * fica para uma rotina de deduplicação dedicada — ver PLANEJAMENTO_NINA épico A).
+ * Procura o contato por e-mail (identidade mais estável) e por telefone. Prevalece
+ * o do e-mail. NÃO funde registros (fusão é destrutiva): quando e-mail e telefone
+ * apontam para contatos DIFERENTES, devolve o primário + o `conflict` para a rotina
+ * chamadora sinalizar e um humano decidir a fusão (dedup de identidade divergente).
  */
 async function findContact(
   service: SupabaseClient,
   email: string | null,
   phone: string | null,
-): Promise<ContactRow | null> {
+): Promise<{ primary: ContactRow | null; conflict: ContactRow | null }> {
+  let byEmail: ContactRow | null = null;
+  let byPhone: ContactRow | null = null;
   if (email) {
     const { data } = await service.from('contacts').select(CONTACT_COLS).ilike('email', email).limit(1);
-    if (Array.isArray(data) && data.length > 0) return data[0] as ContactRow;
+    if (Array.isArray(data) && data.length > 0) byEmail = data[0] as ContactRow;
   }
   if (phone) {
     const { data } = await service.from('contacts').select(CONTACT_COLS).eq('phone_number', phone).limit(1);
-    if (Array.isArray(data) && data.length > 0) return data[0] as ContactRow;
+    if (Array.isArray(data) && data.length > 0) byPhone = data[0] as ContactRow;
   }
-  return null;
+  const primary = byEmail ?? byPhone;
+  const conflict = (byEmail && byPhone && byEmail.id !== byPhone.id)
+    ? (primary === byEmail ? byPhone : byEmail)
+    : null;
+  return { primary, conflict };
 }
 
 /**
@@ -142,7 +148,10 @@ export async function upsertUnifiedContact(
   };
   const baseTags = [origin, ...(persona ? [persona] : [])];
 
-  const existing = await findContact(service, email, phone);
+  const { primary: existing, conflict } = await findContact(service, email, phone);
+  if (conflict) {
+    console.warn('[lead-identity] identidade divergente: e-mail e telefone em contatos diferentes', existing?.id, conflict.id);
+  }
 
   if (existing) {
     const memory = record(existing.client_memory);
@@ -158,8 +167,11 @@ export async function upsertUnifiedContact(
       ...memory,
       lead_state: leadState,
       apollo: { ...record(memory.apollo), ...apolloMeta },
+      ...(conflict
+        ? { identity_conflict: { other_contact_id: conflict.id, detected_at: new Date().toISOString(), note: 'E-mail e telefone apontam para contatos diferentes — revisar fusão.' } }
+        : {}),
     };
-    const tags = Array.from(new Set([...(existing.tags ?? []), ...baseTags]));
+    const tags = Array.from(new Set([...(existing.tags ?? []), ...baseTags, ...(conflict ? ['identity_conflict'] : [])]));
     const update: Record<string, unknown> = { tags, client_memory: newMemory };
     if (email && !existing.email) update.email = email;
     if (phone && !existing.phone_number) update.phone_number = phone;
