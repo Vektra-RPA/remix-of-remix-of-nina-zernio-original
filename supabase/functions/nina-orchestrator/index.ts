@@ -23,7 +23,7 @@ import { redactSensitiveText, redactSensitiveValue } from "../_shared/privacy.ts
 import { consumeRateLimit, RateLimitError } from "../_shared/rate-limit.ts";
 import { buildHandoffPackage } from "../_shared/handoff-package.ts";
 import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
-import { upsertUnifiedContact } from "../_shared/lead-identity.ts";
+import { upsertUnifiedContact, derivePersona } from "../_shared/lead-identity.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -226,6 +226,55 @@ const registerReferralTool = {
         confirmation_evidence: { type: "string", description: "Trecho literal recente em que o lead indicou a outra pessoa." },
       },
       required: ["referred_name", "confirmation_evidence"],
+    },
+  },
+};
+
+// Checklists diagnósticos do playbook (Passo 5.3) — texto aprovado, igual ao que
+// está na base de conhecimento (src/data/playbookKnowledge.ts). São usados em
+// CONVERSA ATIVA (não em toque frio): a Lis compartilha o checklist da persona
+// do lead. Verbatim — a ferramenta devolve o texto exato para não parafrasear.
+const CHECKLIST_P1 = [
+  'Checklist · Cinco perguntas para saber se as decisões da sua indústria dependem demais de você.',
+  '',
+  '1. Você sabe, neste momento, quanto já está comprometido em compras e pagamentos no mês contra o que a empresa pode gastar?',
+  '2. Alguma ordem de compra ou pagamento fica esperando a sua aprovação porque falta informação para decidir?',
+  '3. Você confia que as compras estão sendo fechadas pelo melhor negócio possível, ou aprova sem conseguir conferir?',
+  '4. A precificação de produtos novos passa por você? Existe uma regra clara ou depende de conversa caso a caso?',
+  '5. Se você ficasse uma semana sem aprovar nada, o que pararia primeiro?',
+  '',
+  'Como ler: se você respondeu "não sei", "depende de mim" ou "fica parado" em três ou mais, há um gargalo de informação e de regra, não de pessoas. É o tipo de problema que uma conversa de 30 minutos ajuda a mapear.',
+].join('\n');
+
+const CHECKLIST_P3 = [
+  'Checklist · Cinco rotinas manuais que atrasam o fechamento da indústria.',
+  '',
+  '1. As notas fiscais dos fornecedores só entram no sistema perto do fim do mês?',
+  '2. Alguém confere manualmente as notas emitidas contra as ordens de compra em aberto?',
+  '3. As baixas de inventário ficam pendentes na virada do mês?',
+  '4. As conciliações são feitas à mão ou só depois do fechamento?',
+  '5. Existe alguma etapa do fechamento que só uma pessoa sabe fazer?',
+  '',
+  'Como ler: cada "sim" é uma rotina candidata a automação. Três ou mais indicam que o prazo do fechamento está sendo definido pelo trabalho manual e não pela complexidade da empresa.',
+].join('\n');
+
+// Compartilha o checklist diagnóstico na conversa, já escolhido pela persona do
+// lead (P1 dono/sócio · P3 diretor administrativo-financeiro). Ação benigna
+// (só devolve texto) — tratada ANTES do portão de confirmação explícita.
+const shareChecklistTool = {
+  type: "function",
+  function: {
+    name: "share_checklist",
+    description: "Compartilhar com o lead o checklist diagnóstico curto do playbook (Passo 5.3), já escolhido automaticamente pela persona do lead (P1 = dono/sócio/CEO; P3 = diretor/gerente administrativo-financeiro). Use em CONVERSA ATIVA quando for útil oferecer um material rápido que ajude o lead a enxergar os gargalos — por exemplo, quando ele demonstra interesse mas ainda não quer marcar reunião, ou pede algo prático. A ferramenta devolve o texto EXATO; envie as perguntas na íntegra, sem reescrever nem resumir.",
+    parameters: {
+      type: "object",
+      properties: {
+        persona_hint: {
+          type: "string",
+          enum: ["P1", "P3"],
+          description: "Opcional. Só informe se tiver forte evidência do perfil e a persona ainda não estiver definida no CRM (P1 = dono/sócio/CEO; P3 = diretor/gerente administrativo-financeiro).",
+        },
+      },
     },
   },
 };
@@ -1282,7 +1331,7 @@ async function processQueueItem(
   // habilitar uma ferramenta que o snapshot publicado desabilitou.
   const appointmentPolicy = getActionPolicy(runtimeAgent?.config, 'appointments');
   const handoffPolicy = getActionPolicy(runtimeAgent?.config, 'human_handoff');
-  const extraTools: any[] = [registerOptOutTool, registerConsentTool, registerReferralTool];
+  const extraTools: any[] = [registerOptOutTool, registerConsentTool, registerReferralTool, shareChecklistTool];
   if (appointmentPolicy) extraTools.push(checkAvailabilityTool, createAppointmentTool, rescheduleAppointmentTool, cancelAppointmentTool);
   if (handoffPolicy) extraTools.push(humanHandoffTool);
 
@@ -1332,6 +1381,31 @@ async function processQueueItem(
           },
         ));
         return { result, ok: result.success === true, summary: result.available ? 'available' : 'time_conflict' };
+      }
+
+      // Ação benigna (só devolve texto): tratada antes do portão de confirmação.
+      if (name === 'share_checklist') {
+        const result = await audit(name, async () => {
+          const mem = conversation.contact?.client_memory && typeof conversation.contact.client_memory === 'object'
+            ? conversation.contact.client_memory
+            : {};
+          const apollo = mem.apollo && typeof mem.apollo === 'object' ? mem.apollo : {};
+          // Fonte de verdade: persona do CRM (Apollo). Fallbacks: deriva pelo cargo,
+          // depois a dica do agente; por fim P1 (persona principal do playbook).
+          let persona: 'P1' | 'P3' | null =
+            apollo.persona === 'P1' || apollo.persona === 'P3' ? apollo.persona : null;
+          if (!persona) persona = derivePersona(apollo.title ?? null, apollo.seniority ?? null);
+          if (!persona && (args.persona_hint === 'P1' || args.persona_hint === 'P3')) persona = args.persona_hint;
+          if (!persona) persona = 'P1';
+          const text = persona === 'P3' ? CHECKLIST_P3 : CHECKLIST_P1;
+          return {
+            success: true,
+            persona,
+            checklist_text: text,
+            instruction: 'Envie este checklist ao lead exatamente como está, com as 5 perguntas na íntegra, sem reescrever nem resumir. Você pode acrescentar uma frase curta antes ou depois.',
+          };
+        });
+        return { result, ok: result.success === true, summary: result.success ? `checklist_${result.persona}` : 'checklist_error' };
       }
 
       const confirmed = hasExplicitConfirmation(conversationHistory, args.confirmation_evidence);
