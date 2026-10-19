@@ -9,6 +9,7 @@ import {
 } from "../_shared/cadence-templates.ts";
 import { isExcludedEmail } from "../_shared/exclusions.ts";
 import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
+import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 
 // Motor de cadência (porte do src/pipeline/cadencia.py da Lis Python) para edge function.
 // Diferença de arquitetura: o Python roda um worker long-running (loop 30s); aqui é UMA
@@ -97,7 +98,10 @@ function withinWindow(): boolean {
 async function authenticate(req: Request, supabase: SupabaseClient): Promise<boolean> {
   const token = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
   if (!token) return false;
-  if (token === serviceKey) return true; // cron / chamada interna
+  if (token === serviceKey) return true; // service role / chamada interna
+  // Agendamento gerenciado do Lovable Cloud: Bearer = LOVABLE_CRON_SECRET
+  // (helper gerado pelo próprio Lovable). Mantém service role e admin abaixo.
+  if (authenticateCronRequest(req) === null) return true;
   const { data, error } = await getUserFromToken(token);
   if (error || !data?.user) return false;
   const { data: isAdmin } = await supabase.rpc('has_role', { _user_id: data.user.id, _role: 'admin' });
