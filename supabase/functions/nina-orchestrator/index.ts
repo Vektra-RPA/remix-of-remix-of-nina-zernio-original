@@ -296,6 +296,21 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
+    // Diagnóstico de voz (só service role): gera e sobe um áudio curto sem enviar a ninguém.
+    const requestBody = await req.clone().json().catch(() => ({}));
+    if (requestBody?.action === 'tts_check') {
+      const { data: ttsSettings } = await supabase.from('nina_settings').select('*').limit(1).maybeSingle();
+      lastAudioError = '';
+      const voiceSettings = ttsSettings && typeof requestBody.voice_id === 'string'
+        ? { ...ttsSettings, elevenlabs_voice_id: requestBody.voice_id }
+        : ttsSettings;
+      const buffer = voiceSettings ? await generateAudioElevenLabs(voiceSettings, 'Olá! Aqui é a Lis, da Trajetória Consultoria. Este é um teste de voz.') : null;
+      const url = buffer ? await uploadAudioToStorage(supabase, buffer, 'tts-check') : null;
+      return new Response(JSON.stringify({ ok: !!url, bytes: buffer?.byteLength ?? 0, url, error: lastAudioError || null }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     console.log('[Nina] Starting orchestration...');
 
     // Mantém os secrets do Vault em dia (cron sweeps dependem deles) —
@@ -525,9 +540,14 @@ serve(async (req) => {
 });
 
 // Generate audio using ElevenLabs
+// Motivo da última falha de voz (TTS ou upload), gravado na mensagem do lead quando a
+// resposta em áudio cai para texto — os logs da função só aparecem no painel.
+let lastAudioError = '';
+
 async function generateAudioElevenLabs(settings: any, text: string): Promise<ArrayBuffer | null> {
   if (!settings.elevenlabs_api_key) {
     console.log('[Nina] ElevenLabs API key not configured');
+    lastAudioError = 'tts: sem chave do ElevenLabs';
     return null;
   }
 
@@ -559,12 +579,14 @@ async function generateAudioElevenLabs(settings: any, text: string): Promise<Arr
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[Nina] ElevenLabs error:', response.status, errorText);
+      lastAudioError = `tts: HTTP ${response.status} ${errorText.slice(0, 220)}`;
       return null;
     }
 
     return await response.arrayBuffer();
   } catch (error) {
     console.error('[Nina] Error generating audio:', error);
+    lastAudioError = `tts: ${error instanceof Error ? error.message : String(error)}`;
     return null;
   }
 }
@@ -587,6 +609,7 @@ async function uploadAudioToStorage(
 
     if (error) {
       console.error('[Nina] Error uploading audio:', error);
+      lastAudioError = `upload: ${error.message ?? String(error)}`;
       return null;
     }
 
@@ -599,7 +622,19 @@ async function uploadAudioToStorage(
     return urlData.publicUrl;
   } catch (error) {
     console.error('[Nina] Error uploading audio to storage:', error);
+    lastAudioError = `upload: ${error instanceof Error ? error.message : String(error)}`;
     return null;
+  }
+}
+
+/** Grava na mensagem do lead por que a resposta em áudio caiu para texto. */
+async function recordAudioReplyError(supabase: any, message: any): Promise<void> {
+  try {
+    await supabase.from('messages')
+      .update({ metadata: { ...(message?.metadata ?? {}), audio_reply_error: lastAudioError.slice(0, 300) } })
+      .eq('id', message.id);
+  } catch (error) {
+    console.error('[Nina] Falha ao registrar erro de áudio:', error);
   }
 }
 
@@ -1344,13 +1379,20 @@ async function processQueueItem(
     .order('sent_at', { ascending: false })
     .limit(20);
 
-  // Build conversation history for AI
+  // Build conversation history for AI. Áudio do lead chega já transcrito: a marcação
+  // diz à Lis que ela "ouviu" — sem isso ela tomava o texto por digitado e respondia
+  // que não consegue ouvir áudio.
   const conversationHistory = (recentMessages || [])
     .reverse()
-    .map((msg: any) => ({
-      role: msg.from_type === 'user' ? 'user' : 'assistant',
-      content: msg.content || '[media]'
-    }));
+    .map((msg: any) => {
+      const content = msg.content || '[media]';
+      const transcribedAudio = msg.from_type === 'user' && msg.type === 'audio'
+        && !content.startsWith('[O lead enviou um áudio') && content !== '[áudio - processando transcrição...]';
+      return {
+        role: msg.from_type === 'user' ? 'user' : 'assistant',
+        content: transcribedAudio ? `[áudio transcrito] ${content}` : content,
+      };
+    });
 
   // Get client memory
   const clientMemory = conversation.contact?.client_memory || {};
@@ -1841,10 +1883,12 @@ async function processQueueItem(
         console.log('[Nina] Audio response queued for sending');
       } else {
         console.log('[Nina] Failed to upload audio, falling back to text');
+        await recordAudioReplyError(supabase, message);
         await queueTextResponse(supabase, conversation, message, aiContent, settings, effectiveAi, delay, appointmentCreated, grounding);
       }
     } else {
       console.log('[Nina] Failed to generate audio, falling back to text');
+      await recordAudioReplyError(supabase, message);
       await queueTextResponse(supabase, conversation, message, aiContent, settings, effectiveAi, delay, appointmentCreated, grounding);
     }
   } else {
