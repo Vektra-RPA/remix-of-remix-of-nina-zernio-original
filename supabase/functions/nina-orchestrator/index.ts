@@ -610,6 +610,36 @@ function parseTimeToMinutes(timeStr: string): number {
   return hours * 60 + minutes;
 }
 
+const ORGANIZER_BUSY_TITLE = 'Compromisso na agenda do responsável';
+
+/**
+ * Agenda real do organizador (Google, via service account). A checagem interna só
+ * enxerga agendamentos da própria Nina; o freebusy pega reuniões marcadas por fora.
+ * Best-effort: se a consulta falhar, não bloqueia (vale a checagem interna).
+ */
+async function isOrganizerBusy(date: string, time: string, durationMinutes: number): Promise<boolean> {
+  if (!Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') || !Deno.env.get('FABIANO_CALENDAR_EMAIL')) return false;
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!supabaseUrl || !serviceKey) return false;
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/google-calendar`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'freebusy', date, time: String(time).slice(0, 5), duration: durationMinutes }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.ok !== true) {
+      console.warn('[Nina] freebusy indisponível — seguindo só com a checagem interna:', data?.error ?? response.status);
+      return false;
+    }
+    return data.busy === true;
+  } catch (error) {
+    console.warn('[Nina] freebusy falhou — seguindo só com a checagem interna:', error);
+    return false;
+  }
+}
+
 async function checkAvailabilityFromAI(
   supabase: any,
   workspaceId: string,
@@ -634,9 +664,13 @@ async function checkAvailabilityFromAI(
     return requestedStart < existingEnd && requestedEnd > existingStart;
   });
 
-  return conflict
-    ? { success: true, available: false, conflict: { time: conflict.time, title: conflict.title } }
-    : { success: true, available: true, date: args.date, time: args.time, duration: args.duration || 60 };
+  if (conflict) {
+    return { success: true, available: false, conflict: { time: conflict.time, title: conflict.title } };
+  }
+  if (await isOrganizerBusy(args.date, args.time, args.duration || 60)) {
+    return { success: true, available: false, conflict: { time: args.time, title: ORGANIZER_BUSY_TITLE } };
+  }
+  return { success: true, available: true, date: args.date, time: args.time, duration: args.duration || 60 };
 }
 
 async function runAuditedAction(
@@ -803,14 +837,19 @@ async function createAppointmentFromAI(
     // Check for overlap: new appointment starts before existing ends AND new appointment ends after existing starts
     if (requestedStart < existingEnd && requestedEnd > existingStart) {
       console.log('[Nina] Time conflict detected with appointment:', existing.id);
-      return { 
-        error: 'time_conflict', 
+      return {
+        error: 'time_conflict',
         conflictWith: existing.time,
-        conflictTitle: existing.title 
+        conflictTitle: existing.title
       };
     }
   }
-  
+
+  if (await isOrganizerBusy(args.date, args.time, requestedDuration)) {
+    console.log('[Nina] Time conflict detected on organizer calendar');
+    return { error: 'time_conflict', conflictWith: args.time, conflictTitle: ORGANIZER_BUSY_TITLE };
+  }
+
   // Pacote de passagem (Passo 6.4): anexa a ficha ao agendamento para o Fabiano
   // entrar preparado. Leitura best-effort — falha aqui não impede o agendamento.
   let handoffPackage: string | null = null;
@@ -983,14 +1022,19 @@ async function rescheduleAppointmentFromAI(
     
     if (requestedStart < existingEnd && requestedEnd > existingStart) {
       console.log('[Nina] Time conflict detected at new time');
-      return { 
-        error: 'time_conflict', 
+      return {
+        error: 'time_conflict',
         conflictWith: existing.time,
-        conflictTitle: existing.title 
+        conflictTitle: existing.title
       };
     }
   }
-  
+
+  if (await isOrganizerBusy(args.new_date, args.new_time, appointment.duration || 60)) {
+    console.log('[Nina] Time conflict detected on organizer calendar at new time');
+    return { error: 'time_conflict', conflictWith: args.new_time, conflictTitle: ORGANIZER_BUSY_TITLE };
+  }
+
   // Update the appointment
   const { data, error } = await supabase
     .from('appointments')

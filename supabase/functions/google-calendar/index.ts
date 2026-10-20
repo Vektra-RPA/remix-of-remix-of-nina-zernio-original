@@ -184,6 +184,33 @@ serve(async (req) => {
       return json({ ok: true, organizer, timeZone: data.timeZone ?? null, upcomingSample: Array.isArray(data.items) ? data.items.length : 0 });
     }
 
+    // Ocupado/livre na agenda real do organizador (porte do buscar_slots_livres do
+    // Python): pega reuniões marcadas fora da Nina antes de a Lis oferecer o horário.
+    if (action === 'freebusy') {
+      const date = String(body.date || '');
+      const time = String(body.time || '').slice(0, 5);
+      const duration = Number(body.duration) || 30;
+      const startMs = Date.parse(`${date}T${time}:00-03:00`);
+      if (Number.isNaN(startMs)) return json({ ok: false, error: 'data/hora inválida' }, 400);
+      const token = await getAccessToken(sa, organizer);
+      const res = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          timeMin: new Date(startMs).toISOString(),
+          timeMax: new Date(startMs + duration * 60_000).toISOString(),
+          items: [{ id: organizer }],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return json({ ok: false, error: `freebusy falhou (${res.status})` }, 502);
+      const calendar = data.calendars?.[organizer] ?? {};
+      if (Array.isArray(calendar.errors) && calendar.errors.length > 0) {
+        return json({ ok: false, error: `sem acesso à agenda: ${JSON.stringify(calendar.errors).slice(0, 200)}` }, 502);
+      }
+      return json({ ok: true, busy: Array.isArray(calendar.busy) && calendar.busy.length > 0 });
+    }
+
     const appointmentId = typeof body.appointmentId === 'string' ? body.appointmentId : '';
     if (!appointmentId) return json({ ok: false, error: 'appointmentId obrigatório' }, 400);
 
