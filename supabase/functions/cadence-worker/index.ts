@@ -99,6 +99,11 @@ async function authenticate(req: Request, supabase: SupabaseClient): Promise<boo
   const token = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
   if (!token) return false;
   if (token === serviceKey) return true; // service role / chamada interna
+  // Disparador externo (ex.: GitHub Actions) quando o scheduler do Lovable falha:
+  // Bearer = CADENCE_TRIGGER_TOKEN (valor definido pelo time nas secrets). Só vale
+  // se o secret estiver setado; dá pra rotacionar a qualquer momento.
+  const triggerToken = (Deno.env.get('CADENCE_TRIGGER_TOKEN') || '').trim();
+  if (triggerToken && token === triggerToken) return true;
   // Agendamento gerenciado do Lovable Cloud: Bearer = LOVABLE_CRON_SECRET
   // (helper gerado pelo próprio Lovable). Mantém service role e admin abaixo.
   if (authenticateCronRequest(req) === null) return true;
