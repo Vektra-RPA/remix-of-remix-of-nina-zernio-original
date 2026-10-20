@@ -253,20 +253,27 @@ serve(async (req) => {
       }
     }
 
-    // 2. Check Lovable AI Key
+    // 2. Chave de IA: gateway da Lovable (Lovable Cloud) ou Anthropic/OpenAI
+    // (Supabase próprio — o llm.ts troca o provedor automaticamente).
     const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
-    if (lovableApiKey && lovableApiKey.length > 10) {
+    const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
+    const openaiKey = Deno.env.get('OPENAI_API_KEY');
+    const aiSource = lovableApiKey && lovableApiKey.length > 10 ? 'Lovable AI'
+      : anthropicKey && anthropicKey.length > 10 ? 'Anthropic'
+      : openaiKey && openaiKey.length > 10 ? 'OpenAI'
+      : null;
+    if (aiSource) {
       results.push({
         component: 'lovable_ai',
         status: 'ok',
-        message: 'Lovable AI configurada',
+        message: `IA configurada (${aiSource})`,
       });
     } else {
       results.push({
         component: 'lovable_ai',
         status: 'error',
-        message: 'LOVABLE_API_KEY não configurada',
-        details: 'A IA não funcionará sem esta chave',
+        message: 'Nenhuma chave de IA configurada',
+        details: 'Defina ANTHROPIC_API_KEY nos secrets do Supabase — a IA não funcionará sem ela',
       });
     }
 
