@@ -33,6 +33,7 @@ import {
 import { consumeRateLimit, RateLimitError } from "../_shared/rate-limit.ts";
 import { redactSensitiveText, redactSensitiveValue } from "../_shared/privacy.ts";
 import { getUserFromToken } from '../_shared/auth.ts';
+import { callChatWithFallback } from '../_shared/llm.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -314,75 +315,95 @@ async function judgeCase(
     grounding.tool_events.map((e) => ({ tool: e.tool, args: e.args, ok: e.ok })),
   ).slice(0, 1500);
 
-  const response = await fetch(LOVABLE_AI_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${lovableApiKey}`,
-      'Content-Type': 'application/json',
+  const messages = [
+    {
+      role: 'system',
+      content:
+        'Você avalia respostas de uma SDR de IA (Nina) contra um comportamento esperado definido pelo operador. ' +
+        'Seja rigorosa: em caso de dúvida sobre invenção de informação factual, reprove. ' +
+        'Julgue o comportamento esperado e, quando houver uma regra configurada explícita, também essa regra. ' +
+        'Preencha "analise" com o raciocínio ANTES de decidir "aprovado". ' +
+        'Responda exclusivamente chamando a ferramenta emitir_veredito.',
     },
-    body: JSON.stringify({
-      model: 'google/gemini-2.5-flash',
-      temperature: 0,
-      max_tokens: 1200,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Você avalia respostas de uma SDR de IA (Nina) contra um comportamento esperado definido pelo operador. ' +
-            'Seja rigorosa: em caso de dúvida sobre invenção de informação factual, reprove. ' +
-            'Julgue o comportamento esperado e, quando houver uma regra configurada explícita, também essa regra. ' +
-            'Preencha "analise" com o raciocínio ANTES de decidir "aprovado". ' +
-            'Responda exclusivamente chamando a ferramenta emitir_veredito.',
-        },
-        {
-          role: 'user',
-          content:
-            `## COMPORTAMENTO ESPERADO: ${gc.expected_behavior}\n${BEHAVIOR_RUBRICS[gc.expected_behavior] ?? ''}\n` +
-            `Regra configurada: ${gc.source_rule || '(nenhuma)'}\n\n` +
-            `## PERGUNTA DO CLIENTE\n${gc.query}\n\n` +
-            `## RESPOSTA DA NINA\n${reply || '(vazia)'}\n\n` +
-            `## REFERÊNCIA (o que a resposta deveria conter)\n${gc.expected_content || '(sem referência específica)'}\n\n` +
-            `## CONTEXTO QUE A NINA RECUPEROU DA BASE\n${retrieved || '(nenhum)'}\n\n` +
-            `## FERRAMENTAS CHAMADAS (com argumentos)\n${toolCalls || '[]'}\n\n` +
-            `## SINAIS OBSERVADOS\n${signals}`,
-        },
-      ],
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'emitir_veredito',
-            description: 'Emite o veredito da avaliação deste caso de teste.',
-            parameters: {
-              type: 'object',
-              properties: {
-                analise: {
-                  type: 'string',
-                  description: 'Raciocínio CURTO (até 3 frases), em português, ANTES do veredito',
-                },
-                aprovado: { type: 'boolean' },
-                motivo: {
-                  type: 'string',
-                  description: '1 a 2 frases em português explicando o veredito para o operador',
-                },
-              },
-              required: ['analise', 'aprovado', 'motivo'],
-            },
+    {
+      role: 'user',
+      content:
+        `## COMPORTAMENTO ESPERADO: ${gc.expected_behavior}\n${BEHAVIOR_RUBRICS[gc.expected_behavior] ?? ''}\n` +
+        `Regra configurada: ${gc.source_rule || '(nenhuma)'}\n\n` +
+        `## PERGUNTA DO CLIENTE\n${gc.query}\n\n` +
+        `## RESPOSTA DA NINA\n${reply || '(vazia)'}\n\n` +
+        `## REFERÊNCIA (o que a resposta deveria conter)\n${gc.expected_content || '(sem referência específica)'}\n\n` +
+        `## CONTEXTO QUE A NINA RECUPEROU DA BASE\n${retrieved || '(nenhum)'}\n\n` +
+        `## FERRAMENTAS CHAMADAS (com argumentos)\n${toolCalls || '[]'}\n\n` +
+        `## SINAIS OBSERVADOS\n${signals}`,
+    },
+  ];
+  const verdictTool = {
+    type: 'function',
+    function: {
+      name: 'emitir_veredito',
+      description: 'Emite o veredito da avaliação deste caso de teste.',
+      parameters: {
+        type: 'object',
+        properties: {
+          analise: {
+            type: 'string',
+            description: 'Raciocínio CURTO (até 3 frases), em português, ANTES do veredito',
+          },
+          aprovado: { type: 'boolean' },
+          motivo: {
+            type: 'string',
+            description: '1 a 2 frases em português explicando o veredito para o operador',
           },
         },
-      ],
-      tool_choice: { type: 'function', function: { name: 'emitir_veredito' } },
-    }),
-  });
+        required: ['analise', 'aprovado', 'motivo'],
+      },
+    },
+  };
 
-  if (!response.ok) {
-    const text = await response.text();
-    console.error('[NinaEval] Judge error:', response.status, text);
-    throw new Error(`Juiz indisponível (${response.status})`);
+  let call: { function?: { arguments?: string } } | undefined;
+  if (lovableApiKey) {
+    const response = await fetch(LOVABLE_AI_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${lovableApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.5-flash',
+        temperature: 0,
+        max_tokens: 1200,
+        messages,
+        tools: [verdictTool],
+        tool_choice: { type: 'function', function: { name: 'emitir_veredito' } },
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error('[NinaEval] Judge error:', response.status, text);
+      throw new Error(`Juiz indisponível (${response.status})`);
+    }
+
+    const data = await response.json();
+    call = data.choices?.[0]?.message?.tool_calls?.[0];
+  } else {
+    // Supabase próprio (sem gateway da Lovable): mesmo juiz via Anthropic/OpenAI.
+    // A ferramenta não é forçada — a Claude não aceita tool_choice forçado com o
+    // raciocínio adaptativo ligado; o prompt já exige responder só por ela.
+    const result = await callChatWithFallback({
+      provider: 'lovable',
+      model: 'google/gemini-2.5-flash',
+      apiKeys: { lovable: '' },
+      messages,
+      tools: [verdictTool],
+      temperature: 0,
+      maxTokens: 1200,
+      toolChoice: 'auto',
+    });
+    call = result.toolCalls.find((c) => c.function.name === 'emitir_veredito');
   }
 
-  const data = await response.json();
-  const call = data.choices?.[0]?.message?.tool_calls?.[0];
   let args: any = null;
   try { args = JSON.parse(call?.function?.arguments ?? 'null'); } catch { /* inválido */ }
   if (!args || typeof args.aprovado !== 'boolean') {

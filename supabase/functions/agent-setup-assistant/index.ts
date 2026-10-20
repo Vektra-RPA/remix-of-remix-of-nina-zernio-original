@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { consumeRateLimit, RateLimitError } from '../_shared/rate-limit.ts';
 import { getUserFromToken } from '../_shared/auth.ts';
+import { callChatWithFallback } from '../_shared/llm.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -159,7 +160,9 @@ serve(async (request) => {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
   const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
-  if (!lovableApiKey) return json(503, { error: 'Assistente de configuração temporariamente indisponível.' });
+  // Fora do Lovable Cloud a geração vai direto à Anthropic/OpenAI (callChatWithFallback).
+  const hasDirectAi = Boolean(Deno.env.get('ANTHROPIC_API_KEY') || Deno.env.get('OPENAI_API_KEY'));
+  if (!lovableApiKey && !hasDirectAi) return json(503, { error: 'Assistente de configuração temporariamente indisponível.' });
 
   try {
     const authorization = request.headers.get('authorization');
@@ -341,6 +344,56 @@ Formato obrigatório:
     const user = `Rascunho atual (use apenas para preservar o que já está preenchido):\n${JSON.stringify(pruneEmptyDeep(draft.config) ?? {})}\n\nRespostas da pessoa:\n${JSON.stringify(answers)}\n\nanswer_notes (marcações por campo):\n${JSON.stringify(answerNotes)}\n\nModelo de segmento opcional:\n${String(answers.segmentTemplate || 'nenhum')}\n\nMateriais opcionais:\n${sourceText || 'Nenhum material enviado.'}`;
     const wantsStream = body.stream === true;
     const startedAt = Date.now();
+
+    if (!lovableApiKey) {
+      // Supabase próprio: sem gateway da Lovable não há stream de tokens. Uma chamada
+      // única pelo despachante; quem pediu stream recebe o mesmo evento "complete"
+      // (o dado autoritativo), só sem a pré-visualização progressiva.
+      const sourceSummaries = sources.map((source) => ({ ...source, content: '' }));
+      const generate = async () => {
+        const result = await callChatWithFallback({
+          provider: 'lovable',
+          model: 'google/gemini-3.6-flash',
+          apiKeys: { lovable: '' },
+          messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+          tools: [],
+          temperature: 0.2,
+          maxTokens: 8_000,
+          toolChoice: 'none',
+        });
+        if (!result.content) throw new Error('A IA não retornou uma proposta.');
+        return { proposal: extractJson(result.content) as Record<string, unknown>, outputChars: result.content.length };
+      };
+
+      if (!wantsStream) {
+        const { proposal } = await generate();
+        proposal.sources = sources;
+        return json(200, { proposal, draft_revision: draft.revision, duration_ms: Date.now() - startedAt, usage: null });
+      }
+
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          const send = (event: string, payload: unknown) => {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`));
+          };
+          try {
+            const { proposal, outputChars } = await generate();
+            proposal.sources = sourceSummaries;
+            send('complete', { proposal, draft_revision: draft.revision, duration_ms: Date.now() - startedAt, output_chars: outputChars });
+          } catch (error) {
+            console.error('[agent-setup-assistant] generate', error);
+            send('error', { error: error instanceof Error ? error.message : 'Não foi possível preparar a proposta.' });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, {
+        headers: { ...corsHeaders, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+      });
+    }
+
     const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${lovableApiKey}`, 'Content-Type': 'application/json' },

@@ -7,6 +7,23 @@ const corsHeaders = {
 };
 
 const LOVABLE_AI_URL = "https://ai.gateway.lovable.dev/v1/audio/transcriptions";
+const OPENAI_STT_URL = "https://api.openai.com/v1/audio/transcriptions";
+const ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text";
+
+// Sem transcrição, o áudio sumia da conversa; este aviso deixa a Lis pedir texto.
+const AUDIO_NOT_TRANSCRIBED_NOTE =
+  '[O lead enviou um áudio que não pôde ser transcrito. Peça com gentileza para escrever a mensagem.]';
+
+type Transcriber = { kind: 'lovable' | 'openai' | 'elevenlabs'; key: string };
+
+/** Gateway da Lovable (Lovable Cloud) → OpenAI Whisper → ElevenLabs Scribe. */
+function resolveTranscriber(settings: any, lovableApiKey: string | undefined): Transcriber | null {
+  if (lovableApiKey) return { kind: 'lovable', key: lovableApiKey };
+  const openaiKey = Deno.env.get('OPENAI_API_KEY') || settings?.openai_api_key;
+  if (openaiKey) return { kind: 'openai', key: openaiKey };
+  if (settings?.elevenlabs_api_key) return { kind: 'elevenlabs', key: settings.elevenlabs_api_key };
+  return null;
+}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -305,13 +322,16 @@ async function combineAndTranscribeMessages(
     // Handle audio transcription
     if (messageData.type === 'audio') {
       const audioMediaId = messageData.audio?.id;
-      if (audioMediaId && settings?.whatsapp_access_token && lovableApiKey) {
-        console.log('[MessageGrouper] Transcribing audio:', audioMediaId);
+      const transcriber = resolveTranscriber(settings, lovableApiKey);
+      let transcribed = false;
+      if (audioMediaId && settings?.whatsapp_access_token && transcriber) {
+        console.log('[MessageGrouper] Transcribing audio:', audioMediaId, 'via', transcriber.kind);
         const audioBuffer = await downloadWhatsAppMedia(settings, audioMediaId);
         if (audioBuffer) {
-          const transcription = await transcribeAudio(audioBuffer, lovableApiKey);
+          const transcription = await transcribeAudio(audioBuffer, transcriber);
           if (transcription) {
             content = transcription;
+            transcribed = true;
             // Update the message in database with transcription
             await supabase
               .from('messages')
@@ -320,6 +340,7 @@ async function combineAndTranscribeMessages(
           }
         }
       }
+      if (!transcribed) content = AUDIO_NOT_TRANSCRIBED_NOTE;
     }
 
     if (content && content !== '[áudio - processando transcrição...]') {
@@ -378,22 +399,32 @@ async function downloadWhatsAppMedia(settings: any, mediaId: string): Promise<Ar
   }
 }
 
-// Transcribe audio using Lovable AI Gateway (Whisper)
-async function transcribeAudio(audioBuffer: ArrayBuffer, lovableApiKey: string): Promise<string | null> {
+// Transcribe audio (Whisper via Lovable AI Gateway ou OpenAI; ou ElevenLabs Scribe)
+async function transcribeAudio(audioBuffer: ArrayBuffer, transcriber: Transcriber): Promise<string | null> {
   try {
     console.log('[MessageGrouper] Transcribing audio, size:', audioBuffer.byteLength, 'bytes');
 
     const formData = new FormData();
     const audioBlob = new Blob([audioBuffer], { type: 'audio/ogg' });
     formData.append('file', audioBlob, 'audio.ogg');
-    formData.append('model', 'whisper-1');
-    formData.append('language', 'pt');
 
-    const response = await fetch(LOVABLE_AI_URL, {
+    let url: string;
+    let headers: Record<string, string>;
+    if (transcriber.kind === 'elevenlabs') {
+      url = ELEVENLABS_STT_URL;
+      headers = { 'xi-api-key': transcriber.key };
+      formData.append('model_id', 'scribe_v1');
+      formData.append('language_code', 'por');
+    } else {
+      url = transcriber.kind === 'openai' ? OPENAI_STT_URL : LOVABLE_AI_URL;
+      headers = { 'Authorization': `Bearer ${transcriber.key}` };
+      formData.append('model', 'whisper-1');
+      formData.append('language', 'pt');
+    }
+
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${lovableApiKey}`
-      },
+      headers,
       body: formData
     });
 

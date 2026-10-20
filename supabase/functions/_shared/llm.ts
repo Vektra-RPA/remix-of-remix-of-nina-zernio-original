@@ -327,13 +327,16 @@ function toAnthropicPayload(params: ChatCallParams) {
     model: params.model,
     system: systemParts.join('\n\n') || undefined,
     messages: out,
-    tools: params.tools.map((t: any) => ({
+  };
+  // A API rejeita tool_choice sem tools (chamadas só-texto, ex.: assistente de setup).
+  if (params.tools.length > 0) {
+    payload.tools = params.tools.map((t: any) => ({
       name: t.function?.name,
       description: t.function?.description,
       input_schema: t.function?.parameters ?? { type: 'object', properties: {} },
-    })),
-    tool_choice: { type: params.toolChoice === 'none' ? 'none' : 'auto' },
-  };
+    }));
+    payload.tool_choice = { type: params.toolChoice === 'none' ? 'none' : 'auto' };
+  }
 
   if (isHaiku) {
     // Haiku 4.5: sem adaptive thinking; temperature ainda é aceita

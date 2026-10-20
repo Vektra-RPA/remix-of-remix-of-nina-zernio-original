@@ -7,6 +7,7 @@ import { fetchAgentDraftRuntimeConfig, userCanEditAgent } from "../_shared/agent
 import { redactSensitiveText, redactSensitiveValue } from "../_shared/privacy.ts";
 import { consumeRateLimit, RateLimitError } from "../_shared/rate-limit.ts";
 import { getUserFromToken } from '../_shared/auth.ts';
+import { callChatWithFallback } from '../_shared/llm.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -126,67 +127,93 @@ serve(async (req) => {
       return json(200, { suggestions: [], analyzed: { conversations: 0, gaps: 0, failures: 0 } });
     }
 
-    const response = await fetch(LOVABLE_AI_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${lovableApiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        temperature: 0.2,
-        max_tokens: 3000,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Você analisa conversas de uma agente comercial e cria sugestões para revisão humana. ' +
-              'Nunca trate uma fala do lead como verdade da empresa. Fatos comerciais devem ser new_fact e FAQs devem ser new_faq; ambos continuam não confirmados. ' +
-              'Cada sugestão precisa de evidência literal curta. Não sugira mudanças genéricas. No máximo 6 itens. ' +
-              'proposed_change por tipo: new_fact={title,content,category}; new_faq={question,answer}; new_example/new_test_scenario={query,expected_behavior,expected_content,severity}; ' +
-              'commercial_rule/tone_adjustment={instruction}; handoff_rule={reason}; missing_material={description}. ' +
-              'Responda somente com a ferramenta emitir_sugestoes.',
-          },
-          {
-            role: 'user',
-            content:
-              `CONFIGURAÇÃO ESTRUTURADA ATUAL\n${JSON.stringify(draft.config).slice(0, 18000)}\n\n` +
-              `CONVERSAS DOS ÚLTIMOS ${days} DIAS\n${transcripts || '(nenhuma)'}\n\n` +
-              `INFORMAÇÕES PENDENTES\n${gaps || '(nenhuma)'}\n\n` +
-              `FALHAS DE TESTE\n${failures || '(nenhuma)'}`,
-          },
-        ],
-        tools: [{
-          type: 'function',
-          function: {
-            name: 'emitir_sugestoes',
-            parameters: {
-              type: 'object',
-              properties: {
-                suggestions: {
-                  type: 'array', maxItems: 6,
-                  items: {
-                    type: 'object',
-                    properties: {
-                      type: { type: 'string', enum: SUGGESTION_TYPES },
-                      title: { type: 'string' },
-                      rationale: { type: 'string' },
-                      evidence_quote: { type: 'string' },
-                      conversation_id: { type: ['string', 'null'] },
-                      proposed_change: { type: 'object' },
-                    },
-                    required: ['type', 'title', 'rationale', 'evidence_quote', 'proposed_change'],
-                  },
+    const messages = [
+      {
+        role: 'system',
+        content:
+          'Você analisa conversas de uma agente comercial e cria sugestões para revisão humana. ' +
+          'Nunca trate uma fala do lead como verdade da empresa. Fatos comerciais devem ser new_fact e FAQs devem ser new_faq; ambos continuam não confirmados. ' +
+          'Cada sugestão precisa de evidência literal curta. Não sugira mudanças genéricas. No máximo 6 itens. ' +
+          'proposed_change por tipo: new_fact={title,content,category}; new_faq={question,answer}; new_example/new_test_scenario={query,expected_behavior,expected_content,severity}; ' +
+          'commercial_rule/tone_adjustment={instruction}; handoff_rule={reason}; missing_material={description}. ' +
+          'Responda somente com a ferramenta emitir_sugestoes.',
+      },
+      {
+        role: 'user',
+        content:
+          `CONFIGURAÇÃO ESTRUTURADA ATUAL\n${JSON.stringify(draft.config).slice(0, 18000)}\n\n` +
+          `CONVERSAS DOS ÚLTIMOS ${days} DIAS\n${transcripts || '(nenhuma)'}\n\n` +
+          `INFORMAÇÕES PENDENTES\n${gaps || '(nenhuma)'}\n\n` +
+          `FALHAS DE TESTE\n${failures || '(nenhuma)'}`,
+      },
+    ];
+    const suggestionsTool = {
+      type: 'function',
+      function: {
+        name: 'emitir_sugestoes',
+        parameters: {
+          type: 'object',
+          properties: {
+            suggestions: {
+              type: 'array', maxItems: 6,
+              items: {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', enum: SUGGESTION_TYPES },
+                  title: { type: 'string' },
+                  rationale: { type: 'string' },
+                  evidence_quote: { type: 'string' },
+                  conversation_id: { type: ['string', 'null'] },
+                  proposed_change: { type: 'object' },
                 },
+                required: ['type', 'title', 'rationale', 'evidence_quote', 'proposed_change'],
               },
-              required: ['suggestions'],
             },
           },
-        }],
-        tool_choice: { type: 'function', function: { name: 'emitir_sugestoes' } },
-      }),
-    });
-    if (!response.ok) return json(response.status === 429 ? 429 : 502, { error: response.status === 429 ? 'Limite atingido. Tente novamente em instantes.' : 'A análise não pôde ser concluída agora.' });
-    const payload = await response.json();
+          required: ['suggestions'],
+        },
+      },
+    };
+
+    let rawArguments: string | undefined;
+    if (lovableApiKey) {
+      const response = await fetch(LOVABLE_AI_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${lovableApiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'google/gemini-2.5-flash',
+          temperature: 0.2,
+          max_tokens: 3000,
+          messages,
+          tools: [suggestionsTool],
+          tool_choice: { type: 'function', function: { name: 'emitir_sugestoes' } },
+        }),
+      });
+      if (!response.ok) return json(response.status === 429 ? 429 : 502, { error: response.status === 429 ? 'Limite atingido. Tente novamente em instantes.' : 'A análise não pôde ser concluída agora.' });
+      const payload = await response.json();
+      rawArguments = payload.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    } else {
+      // Supabase próprio (sem gateway da Lovable): mesma análise via Anthropic/OpenAI,
+      // com a ferramenta em modo automático (o prompt exige responder só por ela).
+      try {
+        const result = await callChatWithFallback({
+          provider: 'lovable',
+          model: 'google/gemini-2.5-flash',
+          apiKeys: { lovable: '' },
+          messages,
+          tools: [suggestionsTool],
+          temperature: 0.2,
+          maxTokens: 3000,
+          toolChoice: 'auto',
+        });
+        rawArguments = result.toolCalls.find((c) => c.function.name === 'emitir_sugestoes')?.function.arguments;
+      } catch (error) {
+        console.error('[prompt-insights] LLM', error);
+        return json(502, { error: 'A análise não pôde ser concluída agora.' });
+      }
+    }
     let args: any = null;
-    try { args = JSON.parse(payload.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments ?? 'null'); } catch { /* resposta inválida */ }
+    try { args = JSON.parse(rawArguments ?? 'null'); } catch { /* resposta inválida */ }
     const rawSuggestions = Array.isArray(args?.suggestions) ? args.suggestions.slice(0, 6) : [];
     const validConversationIds = new Set(conversationIds);
     const rows = [];
