@@ -13,6 +13,30 @@ const corsHeaders = {
 
 const GROUPING_DELAY_MS = 10000; // 10 seconds
 
+/**
+ * Playbook (Passo 4, regras de parada): qualquer resposta pausa a automação — também
+ * pelo WhatsApp, não só por e-mail. Marca o contato como "respondeu" (o cadence-worker
+ * nunca mais o matricula) e cancela os toques frios pendentes.
+ */
+async function pauseColdCadence(supabase: any, contact: any): Promise<void> {
+  try {
+    const tags: string[] = Array.isArray(contact.tags) ? contact.tags : [];
+    const memory = contact.client_memory && typeof contact.client_memory === 'object' ? contact.client_memory : {};
+    if (!tags.includes('replied')) {
+      await supabase.from('contacts').update({
+        tags: [...tags, 'replied'],
+        client_memory: { ...memory, replied_at: memory.replied_at ?? new Date().toISOString(), last_reply_channel: 'whatsapp' },
+      }).eq('id', contact.id);
+    }
+    await supabase.from('cadence_state')
+      .update({ status: 'cancelled', last_error: 'respondeu pelo WhatsApp' })
+      .eq('contact_id', contact.id)
+      .eq('status', 'pending');
+  } catch (error) {
+    console.error('[Webhook] Falha ao pausar a cadência:', error);
+  }
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -300,6 +324,8 @@ serve(async (req) => {
           }
 
           console.log('[Webhook] Created message:', dbMessage.id, 'for conversation:', conversation.id);
+
+          await pauseColdCadence(supabase, contact);
 
           // 5. Update conversation last_message_at
           await supabase

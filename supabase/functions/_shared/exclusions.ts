@@ -40,3 +40,17 @@ export function isExcludedDomain(domain?: string | null): boolean {
 export function isExcludedEmail(email?: string | null): boolean {
   return isExcludedDomain(emailDomain(email));
 }
+
+// Playbook 1.3: e-mails genéricos (contato@, comercial@, sac@...) ficam fora da campanha.
+const GENERIC_LOCAL_PARTS = new Set([
+  'contato', 'contatos', 'comercial', 'sac', 'atendimento', 'vendas', 'faleconosco',
+  'info', 'contact', 'suporte', 'adm', 'administrativo', 'administracao', 'financeiro',
+  'compras', 'rh', 'marketing', 'orcamento', 'orcamentos', 'ouvidoria', 'recepcao',
+  'noreply', 'no-reply', 'naoresponda', 'geral', 'empresa',
+]);
+
+/** true se o e-mail é de caixa genérica (não é de uma pessoa). */
+export function isGenericEmail(email?: string | null): boolean {
+  const local = String(email ?? '').toLowerCase().trim().split('@')[0];
+  return !!local && GENERIC_LOCAL_PARTS.has(local);
+}

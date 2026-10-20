@@ -7,7 +7,7 @@ import {
   renderCadenceEmail,
   type CadencePersona,
 } from "../_shared/cadence-templates.ts";
-import { isExcludedEmail } from "../_shared/exclusions.ts";
+import { isExcludedEmail, isGenericEmail } from "../_shared/exclusions.ts";
 import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
 import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 
@@ -38,6 +38,17 @@ const BATCH = 25;          // steps processados por passada
 const ENROLL_PER_RUN = 25; // novos leads matriculados por passada
 const ORPHAN_MS = 5 * 60_000;
 const DAY_MS = 86_400_000;
+const OPENING_STEP = CADENCE_STEPS.find((s) => s.offsetDays === 0)?.step ?? 1;
+const COMPANY_COOLDOWN_DAYS = 30; // playbook 1.2: a outra persona da empresa só entra 30 dias depois
+
+// Regras de envio do piloto (playbook 3.2 e Passo 4), ajustáveis por env:
+// e-mails só de terça a quinta, abertura (D0) só de manhã e no máximo 20–30 por dia por caixa.
+function sendWeekdays(): number[] {
+  return (Deno.env.get('CADENCE_SEND_WEEKDAYS') || '2,3,4')
+    .split(',').map((d) => Number(d.trim())).filter((d) => d >= 0 && d <= 6);
+}
+const DAILY_EMAIL_MAX = Math.max(1, Number(Deno.env.get('CADENCE_DAILY_EMAIL_MAX') || 25));
+const OPENING_END_HOUR = Number(Deno.env.get('CADENCE_OPENING_END_HOUR') || 12);
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -85,14 +96,60 @@ function renderVars(contact: Contact): { nome: string; empresa: string } {
   return { nome: name || 'tudo bem', empresa };
 }
 
+function ignoreWindow(): boolean {
+  return Deno.env.get('CADENCE_IGNORE_WINDOW') === 'true';
+}
+
+/** Agora em BRT (UTC-3) — ler com os métodos getUTC*. */
+function brNow(): Date {
+  return new Date(Date.now() - 3 * 3_600_000);
+}
+
 /** Janela útil 9-17h BRT (UTC-3), dia útil. CADENCE_IGNORE_WINDOW=true libera (só ensaio). */
 function withinWindow(): boolean {
-  if (Deno.env.get('CADENCE_IGNORE_WINDOW') === 'true') return true;
-  const br = new Date(Date.now() - 3 * 3_600_000);
+  if (ignoreWindow()) return true;
+  const br = brNow();
   const day = br.getUTCDay(); // 0=domingo, 6=sábado
   if (day === 0 || day === 6) return false;
   const hour = br.getUTCHours();
   return hour >= 9 && hour < 17;
+}
+
+/** Dia de envio do piloto (padrão terça a quinta). */
+function isSendDay(): boolean {
+  return ignoreWindow() || sendWeekdays().includes(brNow().getUTCDay());
+}
+
+/** A abertura (D0) sai só de manhã. */
+function isOpeningWindow(): boolean {
+  return ignoreWindow() || brNow().getUTCHours() < OPENING_END_HOUR;
+}
+
+/** E-mails da cadência já enviados hoje (dia de São Paulo). */
+async function emailsSentToday(supabase: SupabaseClient): Promise<number> {
+  const br = brNow();
+  const startUtc = Date.UTC(br.getUTCFullYear(), br.getUTCMonth(), br.getUTCDate()) + 3 * 3_600_000;
+  const { count } = await supabase
+    .from('cadence_state')
+    .select('id', { count: 'exact', head: true })
+    .eq('channel', 'email')
+    .eq('status', 'sent')
+    .gte('sent_at', new Date(startUtc).toISOString());
+  return count ?? 0;
+}
+
+/** Playbook 1.3: só e-mail "Verified" no Apollo (sem status = não veio do Apollo, passa). */
+function emailNotVerified(contact: Contact): boolean {
+  const status = record(record(contact.client_memory).apollo).email_status;
+  return typeof status === 'string' && status !== '' && status.toLowerCase() !== 'verified';
+}
+
+/** Filtros de entrada na campanha que não dependem do banco. */
+function notEligible(contact: Contact): boolean {
+  return !contact.email || !personaOf(contact) || isSuppressed(contact) || hasReplied(contact)
+    || isExcludedEmail(contact.email) // domínio próprio / cliente ativo
+    || isGenericEmail(contact.email)   // contato@, comercial@, sac@...
+    || emailNotVerified(contact);
 }
 
 async function authenticate(req: Request, supabase: SupabaseClient): Promise<boolean> {
@@ -253,8 +310,9 @@ function companyDomainOf(contact: Contact): string | null {
 
 /**
  * Playbook 1.2 (regra de conta): no máximo 1 contato por empresa em sequência ativa.
- * Ninguém recebe mensagens de duas pessoas da mesma empresa ao mesmo tempo — a outra
- * persona só entra depois. Agrupa pelo domínio do e-mail.
+ * Ninguém recebe mensagens de duas pessoas da mesma empresa ao mesmo tempo, e a outra
+ * persona só entra 30 dias depois do último toque enviado à empresa. Agrupa pelo
+ * domínio do e-mail.
  */
 async function companyHasActiveSequence(supabase: SupabaseClient, contact: Contact): Promise<boolean> {
   const domain = companyDomainOf(contact);
@@ -273,13 +331,20 @@ async function companyHasActiveSequence(supabase: SupabaseClient, contact: Conta
     .in('contact_id', ids)
     .in('status', ['pending', 'sending'])
     .limit(1);
-  return Array.isArray(active) && active.length > 0;
+  if (Array.isArray(active) && active.length > 0) return true;
+  const { data: recent } = await supabase
+    .from('cadence_state')
+    .select('contact_id')
+    .in('contact_id', ids)
+    .eq('status', 'sent')
+    .gte('sent_at', new Date(Date.now() - COMPANY_COOLDOWN_DAYS * DAY_MS).toISOString())
+    .limit(1);
+  return Array.isArray(recent) && recent.length > 0;
 }
 
 /** Matricula um contato na cadência (idempotente via índice único contact_id,step). */
 async function enrollContact(supabase: SupabaseClient, contact: Contact): Promise<boolean> {
-  if (!contact.email || !personaOf(contact) || isSuppressed(contact) || hasReplied(contact)) return false;
-  if (isExcludedEmail(contact.email)) return false; // domínio próprio / cliente ativo
+  if (notEligible(contact)) return false;
   if (await companyHasActiveSequence(supabase, contact)) {
     console.log('[cadence] já há contato da mesma empresa em sequência ativa — não matricula', contact.id);
     return false;
@@ -311,7 +376,7 @@ async function autoEnroll(supabase: SupabaseClient, limit: number): Promise<numb
   let enrolled = 0;
   for (const c of (candidates ?? [])) {
     if (enrolled >= limit) break;
-    if (isSuppressed(c) || hasReplied(c) || !personaOf(c) || isExcludedEmail(c.email)) continue;
+    if (notEligible(c)) continue;
     const { data: existing } = await supabase.from('cadence_state').select('id').eq('contact_id', c.id).limit(1);
     if (Array.isArray(existing) && existing.length) continue;
     if (await enrollContact(supabase, c)) enrolled += 1;
@@ -399,6 +464,11 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
 
   // 2) Janela útil (só para os toques frios da cadência).
   if (!withinWindow()) return { skipped: 'fora da janela útil (9-17h, dia útil)', ...reminders };
+  if (!isSendDay()) return { skipped: 'fora dos dias de envio do piloto (terça a quinta)', ...reminders };
+  let sentToday = await emailsSentToday(supabase);
+  if (sentToday >= DAILY_EMAIL_MAX) {
+    return { skipped: `limite diário de e-mails atingido (${sentToday}/${DAILY_EMAIL_MAX})`, ...reminders };
+  }
 
   // 3) Auto-matrícula de novos qualificados.
   const enrolled = await autoEnroll(supabase, ENROLL_PER_RUN);
@@ -415,6 +485,11 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
 
   let sent = 0, skipped = 0, errors = 0, rateLimited = false;
   for (const item of (due ?? [])) {
+    if (item.channel === 'email') {
+      if (sentToday >= DAILY_EMAIL_MAX) break; // cota do dia cheia: o resto fica para amanhã
+      if (item.step === OPENING_STEP && !isOpeningWindow()) continue; // abertura só de manhã
+    }
+
     // Guarda de ordem: não envia um step com anterior ainda pendente/em envio.
     const { data: earlier } = await supabase
       .from('cadence_state')
@@ -489,6 +564,7 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     }
     await supabase.from('cadence_state').update({ status: 'sent', sent_at: new Date().toISOString(), last_error: null }).eq('id', item.id);
     sent += 1;
+    sentToday += 1;
     // Guarda o Message-ID como âncora do próximo step (preserva o fio da thread).
     if (res.rfcMessageId) {
       const mem = record(contact.client_memory);
