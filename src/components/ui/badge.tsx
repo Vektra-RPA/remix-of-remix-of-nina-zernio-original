@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
-// Pill canônica Viver de IA: 11px · peso 500 · sem caps lock · sem dot decorativa
+// Pill canônica Trajetória: 11px · peso 500 · sem caps lock · sem dot decorativa
 const badgeVariants = cva(
   "via-meta-chip transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
   {

@@ -5,7 +5,7 @@ import { Link, LinkProps } from "react-router-dom";
 import React, { useState, createContext, useContext } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Menu, X, ChevronLeft } from "lucide-react";
-import viaLogoWhite from "@/assets/logo-via-white.png";
+import brandLogoWhite from "@/assets/logo-trajetoria-white.png";
 
 interface Links {
   label: string;
@@ -148,7 +148,7 @@ export const MobileSidebar = ({
         {...props}
       >
         <Link to="/dashboard" className="app-sidebar-mobilebrand" aria-label="Ir para o dashboard">
-          <img src={viaLogoWhite} alt="Viver de IA" />
+          <img src={brandLogoWhite} alt="Trajetória Consultoria" />
         </Link>
         <button
           type="button"

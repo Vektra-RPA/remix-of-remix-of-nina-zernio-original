@@ -1,5 +1,5 @@
 /* =============================================================
-   VIVER DE IA — Design System
+   TRAJETÓRIA CONSULTORIA — Design System
    White-first · navy + grays + black · glass on light surfaces
    ============================================================= */
 
@@ -11,42 +11,42 @@
   /* ========== COLORS ========================================== */
 
   /* Navy — the brand color. Used for primary text and primary surfaces. */
-  --via-navy:        #0A1F3B;   /* primary navy */
-  --via-navy-deep:   #02162A;   /* deep, used for full-bleed dark moments */
-  --via-navy-darker: #010B1A;   /* darkest, footers / borders */
-  --via-blue:        #1E3A5F;   /* mid azul-escuro */
-  --via-blue-soft:   #2A4A6E;   /* hover state on navy / borders on navy */
+  --via-navy:        #1B2A38;   /* primary navy */
+  --via-navy-deep:   #142130;   /* deep, used for full-bleed dark moments */
+  --via-navy-darker: #0D1722;   /* darkest, footers / borders */
+  --via-blue:        #17699A;   /* mid azul-escuro */
+  --via-blue-soft:   #1F5F8B;   /* hover state on navy / borders on navy */
 
   /* Data-viz · rampa monocromática de 5 passos com separação REAL de valor
      (navy → azul-aço → azul-claro). Resolve "cor próxima e escura": cada
      série/segmento vira um tom nitidamente distinto, sem sair da paleta. */
-  --via-chart-1:     #0A1F3B;   /* navy — anchor, série dominante */
-  --via-chart-2:     #335379;   /* azul-aço escuro */
-  --via-chart-3:     #5E7B9E;   /* azul-aço médio */
-  --via-chart-4:     #93A8C2;   /* azul claro */
-  --via-chart-5:     #C4CFDD;   /* azul-cinza claro */
+  --via-chart-1:     #1B2A38;   /* navy — anchor, série dominante */
+  --via-chart-2:     #17699A;   /* azul-aço escuro */
+  --via-chart-3:     #4F93BD;   /* azul-aço médio */
+  --via-chart-4:     #86B3D2;   /* azul claro */
+  --via-chart-5:     #C9DDEB;   /* azul-cinza claro */
   --via-chart-ink:   var(--via-navy);   /* cor primária de dado (linha/barra/funil) · adapta no dark */
   --via-chart-ink-2: var(--via-blue);   /* fim do gradiente de dado */
 
   /* Navy transparency stops (for hairlines, hovers, soft surfaces) */
-  --via-navy-80: rgba(10, 31, 59, 0.80);
-  --via-navy-60: rgba(10, 31, 59, 0.60);
-  --via-navy-40: rgba(10, 31, 59, 0.40);
-  --via-navy-30: rgba(10, 31, 59, 0.30);
-  --via-navy-25: rgba(10, 31, 59, 0.25);
-  --via-navy-22: rgba(10, 31, 59, 0.22);
-  --via-navy-20: rgba(10, 31, 59, 0.20);
-  --via-navy-18: rgba(10, 31, 59, 0.18);
-  --via-navy-16: rgba(10, 31, 59, 0.16);
-  --via-navy-14: rgba(10, 31, 59, 0.14);
-  --via-navy-12: rgba(10, 31, 59, 0.12);
-  --via-navy-10: rgba(10, 31, 59, 0.10);
-  --via-navy-08: rgba(10, 31, 59, 0.08);
-  --via-navy-06: rgba(10, 31, 59, 0.06);
-  --via-navy-05: rgba(10, 31, 59, 0.05);
-  --via-navy-04: rgba(10, 31, 59, 0.04);
-  --via-navy-03: rgba(10, 31, 59, 0.03);
-  --via-navy-02: rgba(10, 31, 59, 0.02);
+  --via-navy-80: rgba(27, 42, 56, 0.80);
+  --via-navy-60: rgba(27, 42, 56, 0.60);
+  --via-navy-40: rgba(27, 42, 56, 0.40);
+  --via-navy-30: rgba(27, 42, 56, 0.30);
+  --via-navy-25: rgba(27, 42, 56, 0.25);
+  --via-navy-22: rgba(27, 42, 56, 0.22);
+  --via-navy-20: rgba(27, 42, 56, 0.20);
+  --via-navy-18: rgba(27, 42, 56, 0.18);
+  --via-navy-16: rgba(27, 42, 56, 0.16);
+  --via-navy-14: rgba(27, 42, 56, 0.14);
+  --via-navy-12: rgba(27, 42, 56, 0.12);
+  --via-navy-10: rgba(27, 42, 56, 0.10);
+  --via-navy-08: rgba(27, 42, 56, 0.08);
+  --via-navy-06: rgba(27, 42, 56, 0.06);
+  --via-navy-05: rgba(27, 42, 56, 0.05);
+  --via-navy-04: rgba(27, 42, 56, 0.04);
+  --via-navy-03: rgba(27, 42, 56, 0.03);
+  --via-navy-02: rgba(27, 42, 56, 0.02);
 
   /* Grayscale — the secondary palette */
   --via-gray-50:  #F7F8FA;   /* page bg (alt) */
@@ -90,13 +90,13 @@
 
   /* Semantic borders */
   --via-border-hairline: var(--via-gray-200);
-  --via-border:          rgba(10, 31, 59, 0.16);   /* hairline navy-tint p/ controles (era gray-300 frio) · visível mas glassy */
-  --via-border-soft:     rgba(10, 31, 59, 0.05);  /* hairline frameless (Apple) · 583 usos · a sombra+brilho definem o card */
+  --via-border:          rgba(27, 42, 56, 0.16);   /* hairline navy-tint p/ controles (era gray-300 frio) · visível mas glassy */
+  --via-border-soft:     rgba(27, 42, 56, 0.05);  /* hairline frameless (Apple) · 583 usos · a sombra+brilho definem o card */
   --via-border-strong:   var(--via-navy-40);
 
   /* Status — desaturated, navy-adjacent */
   --via-success: #1F8A5B;
-  --via-warning: #0A1F3B;
+  --via-warning: #1B2A38;
   --via-danger:  #B83A3A;
 
   /* ========== EDITORIAL INK SCALE =============================
@@ -131,7 +131,7 @@
   --via-mono:    var(--via-font-mono);
 
   /* ========== BG SOFT (surfaces) ============================== */
-  --via-bg-soft: rgba(10, 31, 59, 0.025);   /* card soft alternate */
+  --via-bg-soft: rgba(27, 42, 56, 0.025);   /* card soft alternate */
 }
 
 /* =============================================================
@@ -441,14 +441,14 @@
 
      Exceção legítima: `inset 0 1px 0 var(--via-edge-hi)` — a linha de
      luz no topo do vidro. Ali o branco é o efeito desejado. */
-  --via-shadow-ink-03: rgba(10, 31, 59, 0.03);
-  --via-shadow-ink-06: rgba(10, 31, 59, 0.06);
-  --via-shadow-ink-10: rgba(10, 31, 59, 0.10);
-  --via-shadow-ink-14: rgba(10, 31, 59, 0.14);
-  --via-shadow-ink-20: rgba(10, 31, 59, 0.20);
-  --via-shadow-ink-30: rgba(10, 31, 59, 0.30);
-  --via-shadow-ink-40: rgba(10, 31, 59, 0.40);
-  --via-shadow-ink-60: rgba(10, 31, 59, 0.60);
+  --via-shadow-ink-03: rgba(27, 42, 56, 0.03);
+  --via-shadow-ink-06: rgba(27, 42, 56, 0.06);
+  --via-shadow-ink-10: rgba(27, 42, 56, 0.10);
+  --via-shadow-ink-14: rgba(27, 42, 56, 0.14);
+  --via-shadow-ink-20: rgba(27, 42, 56, 0.20);
+  --via-shadow-ink-30: rgba(27, 42, 56, 0.30);
+  --via-shadow-ink-40: rgba(27, 42, 56, 0.40);
+  --via-shadow-ink-60: rgba(27, 42, 56, 0.60);
 
   /* ========== DATAVIZ · paleta de série (VALIDADA por script) ===
      Regra desta marca: a paleta é navy-only, o que torna gráfico
@@ -501,18 +501,18 @@
 
   /* ========== SHADOWS ========================================= */
   /* Navy-tinted, gentle. The brand never uses gray-black shadows. */
-  --via-shadow-xs: 0 1px 2px rgba(10,31,59,0.04);
-  --via-shadow-sm: 0 2px 6px rgba(10,31,59,0.05), 0 1px 2px rgba(10,31,59,0.03);
-  --via-shadow-md: 0 6px 18px rgba(10,31,59,0.07), 0 1px 3px rgba(10,31,59,0.04);
-  --via-shadow-lg: 0 16px 40px rgba(10,31,59,0.10), 0 2px 8px rgba(10,31,59,0.05);
-  --via-shadow-xl: 0 32px 80px rgba(10,31,59,0.14), 0 4px 16px rgba(10,31,59,0.06);
+  --via-shadow-xs: 0 1px 2px rgba(27, 42, 56,0.04);
+  --via-shadow-sm: 0 2px 6px rgba(27, 42, 56,0.05), 0 1px 2px rgba(27, 42, 56,0.03);
+  --via-shadow-md: 0 6px 18px rgba(27, 42, 56,0.07), 0 1px 3px rgba(27, 42, 56,0.04);
+  --via-shadow-lg: 0 16px 40px rgba(27, 42, 56,0.10), 0 2px 8px rgba(27, 42, 56,0.05);
+  --via-shadow-xl: 0 32px 80px rgba(27, 42, 56,0.14), 0 4px 16px rgba(27, 42, 56,0.06);
 
   /* Glass-specific shadow: inner highlight + soft outer drop */
   --via-shadow-glass-light:
     inset 0 1px 0 rgba(255,255,255,0.95),
     inset 0 -1px 0 rgba(255,255,255,0.30),
-    0 12px 32px rgba(10,31,59,0.08),
-    0 2px 8px rgba(10,31,59,0.04);
+    0 12px 32px rgba(27, 42, 56,0.08),
+    0 2px 8px rgba(27, 42, 56,0.04);
 
   --via-shadow-glass-dark:
     inset 0 1px 0 rgba(255,255,255,0.25),
@@ -520,7 +520,7 @@
     0 16px 40px rgba(0,0,0,0.30),
     0 4px 12px rgba(0,0,0,0.15);
 
-  --via-shadow-focus: 0 0 0 3px rgba(10,31,59,0.15);
+  --via-shadow-focus: 0 0 0 3px rgba(27, 42, 56,0.15);
 
   /* ========== BLUR =========================================== */
   --via-blur-sm: blur(8px)  saturate(140%);
@@ -548,7 +548,7 @@
   --via-mesh-light:
     radial-gradient(ellipse 60% 70% at 12% 0%,  rgba(30,58,95,0.28) 0%,  transparent 55%),
     radial-gradient(ellipse 50% 60% at 95% 8%,  rgba(46,76,118,0.22) 0%, transparent 55%),
-    radial-gradient(ellipse 70% 80% at 100% 100%, rgba(10,31,59,0.30) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 80% at 100% 100%, rgba(27, 42, 56,0.30) 0%, transparent 55%),
     radial-gradient(ellipse 50% 60% at 5% 100%, rgba(30,58,95,0.18) 0%, transparent 55%),
     linear-gradient(135deg, #CCD4DD 0%, #A7B2C0 100%);
 
@@ -558,7 +558,7 @@
     radial-gradient(ellipse 50% 60% at 95% 8%,  rgba(30,58,95,0.50)  0%, transparent 60%),
     radial-gradient(ellipse 70% 80% at 100% 100%, rgba(2,22,42,0.85) 0%, transparent 55%),
     radial-gradient(ellipse 50% 60% at 5% 100%, rgba(46,76,118,0.40) 0%, transparent 55%),
-    linear-gradient(135deg, #0A1F3B 0%, #02162A 100%);
+    linear-gradient(135deg, #1B2A38 0%, #142130 100%);
 
   /* Noise texture: data-URI SVG turbulence em 4% opacity */
   --via-noise:
@@ -566,14 +566,14 @@
 
   /* Glow navy — aura sutil pra elementos navy sólidos */
   --via-glow-navy:
-    0 0 0 1px rgba(10,31,59,0.05),
-    0 8px 24px rgba(10,31,59,0.20),
-    0 16px 48px rgba(10,31,59,0.14);
+    0 0 0 1px rgba(27, 42, 56,0.05),
+    0 8px 24px rgba(27, 42, 56,0.20),
+    0 16px 48px rgba(27, 42, 56,0.14);
 
   --via-glow-navy-strong:
-    0 0 0 1px rgba(10,31,59,0.10),
-    0 16px 48px rgba(10,31,59,0.30),
-    0 32px 80px rgba(10,31,59,0.20);
+    0 0 0 1px rgba(27, 42, 56,0.10),
+    0 16px 48px rgba(27, 42, 56,0.30),
+    0 32px 80px rgba(27, 42, 56,0.20);
 }
 
 /* =============================================================
@@ -735,7 +735,7 @@ a:hover { text-decoration: underline; }
   -webkit-backdrop-filter: var(--via-blur-md);
   border: 1px solid rgba(255,255,255,0.95);
   border-radius: var(--via-radius-pill);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,1), 0 4px 16px rgba(10,31,59,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,1), 0 4px 16px rgba(27, 42, 56,0.08);
 }
 
 /* Dark: vidro branco hardcoded vira vidro escuro translúcido (senão estes

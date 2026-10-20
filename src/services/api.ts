@@ -502,7 +502,7 @@ export const api = {
       .insert({
         name: team.name,
         description: team.description,
-        color: team.color || '#0A1F3B',
+        color: team.color || '#17699A',
         user_id: null
       })
       .select()

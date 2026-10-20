@@ -19,7 +19,7 @@ const TeamConfigModal: React.FC<TeamConfigModalProps> = ({ isOpen, onClose, onUp
   const [functions, setFunctions] = useState<TeamFunction[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', description: '', color: '#0A1F3B' });
+  const [editForm, setEditForm] = useState({ name: '', description: '', color: '#17699A' });
   const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
@@ -74,7 +74,7 @@ const TeamConfigModal: React.FC<TeamConfigModalProps> = ({ isOpen, onClose, onUp
         description: editForm.description,
         color: editForm.color
       });
-      setEditForm({ name: '', description: '', color: '#0A1F3B' });
+      setEditForm({ name: '', description: '', color: '#17699A' });
       setIsCreating(false);
       onUpdate();
     } catch (error) {
@@ -89,7 +89,7 @@ const TeamConfigModal: React.FC<TeamConfigModalProps> = ({ isOpen, onClose, onUp
         name: editForm.name,
         description: editForm.description
       });
-      setEditForm({ name: '', description: '', color: '#0A1F3B' });
+      setEditForm({ name: '', description: '', color: '#17699A' });
       setIsCreating(false);
       onUpdate();
     } catch (error) {
@@ -105,7 +105,7 @@ const TeamConfigModal: React.FC<TeamConfigModalProps> = ({ isOpen, onClose, onUp
         color: editForm.color
       });
       setEditingId(null);
-      setEditForm({ name: '', description: '', color: '#0A1F3B' });
+      setEditForm({ name: '', description: '', color: '#17699A' });
       onUpdate();
     } catch (error) {
       console.error('Error updating team:', error);
@@ -119,7 +119,7 @@ const TeamConfigModal: React.FC<TeamConfigModalProps> = ({ isOpen, onClose, onUp
         description: editForm.description
       });
       setEditingId(null);
-      setEditForm({ name: '', description: '', color: '#0A1F3B' });
+      setEditForm({ name: '', description: '', color: '#17699A' });
       onUpdate();
     } catch (error) {
       console.error('Error updating function:', error);
@@ -151,7 +151,7 @@ const TeamConfigModal: React.FC<TeamConfigModalProps> = ({ isOpen, onClose, onUp
     setEditForm({
       name: item.name,
       description: item.description || '',
-      color: type === 'team' ? (item as Team).color : '#0A1F3B'
+      color: type === 'team' ? (item as Team).color : '#17699A'
     });
   };
 

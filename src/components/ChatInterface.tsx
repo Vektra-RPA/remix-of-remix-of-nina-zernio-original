@@ -210,7 +210,7 @@ const ChatInterface: React.FC = () => {
             className="rounded-lg max-w-full h-auto max-h-72 object-cover border border-border/50 shadow-sm"
             loading="lazy"
             onError={(e) => {
-              (e.target as HTMLImageElement).src = 'https://placehold.co/300x200/0A1F3B/FFFFFF?text=Erro+Imagem';
+              (e.target as HTMLImageElement).src = 'https://placehold.co/300x200/1B2A38/FFFFFF?text=Erro+Imagem';
             }}
           />
           {caption && <p className="mt-1 leading-relaxed whitespace-pre-wrap">{caption}</p>}

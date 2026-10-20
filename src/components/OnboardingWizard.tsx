@@ -430,7 +430,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ isOpen, onCl
             value={companyName}
             maxLength={160}
             onChange={(e) => { dirtyIdentityRef.current.add('companyName'); setCompanyName(e.target.value); }}
-            placeholder="Ex.: Viver de IA"
+            placeholder="Ex.: Trajetória Consultoria"
           />
         </div>
         <div className="space-y-2">

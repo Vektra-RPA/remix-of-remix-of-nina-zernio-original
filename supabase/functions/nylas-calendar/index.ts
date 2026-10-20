@@ -417,7 +417,7 @@ async function syncAppointment(supabase: SupabaseClient, appointmentId: string) 
 
     const payload = buildNylasEventPayload({
       title: appointment.title,
-      description: [appointment.description, 'Agendamento criado pela Nina · Viver de IA']
+      description: [appointment.description, 'Agendamento criado pela Lis · Trajetória Consultoria']
         .filter(Boolean)
         .join('\n\n'),
       date: String(appointment.date),

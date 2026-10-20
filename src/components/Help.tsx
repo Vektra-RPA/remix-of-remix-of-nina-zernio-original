@@ -455,7 +455,7 @@ const Help: React.FC = () => {
                   <p>
                     Esse processo inteiro está documentado de ponta a ponta na formação WhatsApp API, disponível na{' '}
                     <a href="https://app.viverdeia.ai/formacoes/formacao-de-whatsapp-api" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground transition-colors">
-                      plataforma da Viver de IA
+                      plataforma da Trajetória Consultoria
                     </a>
                     {' '}— vale acompanhar por lá na primeira configuração.
                   </p>

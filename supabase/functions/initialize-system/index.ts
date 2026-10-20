@@ -9,14 +9,14 @@ const corsHeaders = {
 // Generate a unique verify token
 function generateVerifyToken(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = 'viver-ia-';
+  let result = 'trajetoria-';
   for (let i = 0; i < 16; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
 }
 
-// Default pipeline stages — cores em tokens Viver de IA (mesmo vocabulário
+// Default pipeline stages — cores em tokens do design system (mesmo vocabulário
 // do picker em src/lib/stageColors.ts; nunca usar classes de cor cruas)
 const DEFAULT_PIPELINE_STAGES = [
   { position: 0, title: 'Novos Leads', color: 'border-muted-foreground', is_system: false, is_ai_managed: false },
@@ -69,8 +69,8 @@ const DEFAULT_NINA_SETTINGS = {
   adaptive_response_enabled: true,
   ai_scheduling_enabled: true,
   route_all_to_receiver_enabled: false,
-  company_name: 'Viver de IA',
-  sdr_name: 'Nina',
+  company_name: 'Trajetória Consultoria',
+  sdr_name: 'Lis',
   // O comportamento é criado em agent_drafts e só entra em produção por
   // agent_versions. O campo legado permanece nulo apenas por compatibilidade
   // com bancos ainda não migrados.

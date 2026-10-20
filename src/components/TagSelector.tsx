@@ -21,7 +21,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
   const [isCreating, setIsCreating] = useState(false);
   const [newTag, setNewTag] = useState({
     label: '',
-    color: '#0A1F3B',
+    color: '#17699A',
     category: 'custom'
   });
 
@@ -63,7 +63,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
       category: newTag.category
     });
 
-    setNewTag({ label: '', color: '#0A1F3B', category: 'custom' });
+    setNewTag({ label: '', color: '#17699A', category: 'custom' });
     setIsCreating(false);
   };
 

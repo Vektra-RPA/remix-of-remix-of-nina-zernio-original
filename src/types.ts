@@ -351,7 +351,7 @@ export function transformDBToUIConversation(
     channel: conv.channel === 'instagram' ? 'instagram' : 'whatsapp',
     contactName: conv.contact?.name || conv.contact?.call_name || conv.contact?.phone_number || 'Desconhecido',
     contactPhone: conv.contact?.phone_number || '',
-    contactAvatar: conv.contact?.profile_picture_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.contact?.name || 'U')}&background=0A1F3B&color=fff`,
+    contactAvatar: conv.contact?.profile_picture_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.contact?.name || 'U')}&background=1B2A38&color=fff`,
     contactEmail: conv.contact?.email || null,
     status: conv.status,
     isActive: conv.is_active,

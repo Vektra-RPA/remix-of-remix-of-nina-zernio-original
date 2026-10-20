@@ -2,7 +2,7 @@ import React from 'react';
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-// Adapter sobre os tokens do design system Viver de IA.
+// Adapter sobre os tokens do design system da Trajetória.
 // Mantém a API legada (primary/secondary/outline/ghost/danger + sm/md/lg/icon)
 // usada nas telas de negócio; novos componentes devem preferir ui/button.
 export const buttonVariants = cva(

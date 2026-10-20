@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 /**
- * Tema do painel · light-first, como manda o design system Viver de IA.
+ * Tema do painel · light-first, como manda o design system da Trajetória.
  *
  * O <html> carrega DOIS marcadores porque o app tem duas fontes de estilo:
  *   · data-theme="dark" → tokens --via-* (src/styles/via-tokens.css)

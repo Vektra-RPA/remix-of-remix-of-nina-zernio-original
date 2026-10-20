@@ -19,8 +19,8 @@ import { Button } from '@/components/Button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/hooks/useAuth';
-import viaLogo from '@/assets/logo-via.png';
-import viaLogoWhite from '@/assets/logo-via-white.png';
+import brandLogo from '@/assets/logo-trajetoria.png';
+import brandLogoWhite from '@/assets/logo-trajetoria-white.png';
 import './Auth.css';
 
 const emailSchema = z.string().email('Email inválido');
@@ -126,11 +126,11 @@ const Auth: React.FC = () => {
 
   return (
     <main className="auth-page">
-      <section className="auth-story via-mesh-navy via-noise" data-on-dark aria-label="Sobre a Nina">
-        <img src={viaLogoWhite} alt="Viver de IA" className="auth-story-logo" />
+      <section className="auth-story via-mesh-navy via-noise" data-on-dark aria-label="Sobre a Lis">
+        <img src={brandLogoWhite} alt="Trajetória Consultoria" className="auth-story-logo" />
 
         <div className="auth-story-copy">
-          <p className="via-eyebrow auth-story-eyebrow">Nina · SDR com IA</p>
+          <p className="via-eyebrow auth-story-eyebrow">Lis · SDR da Trajetória</p>
           <h1>
             Conversa qualificada.
             <br />
@@ -156,14 +156,14 @@ const Auth: React.FC = () => {
           </ul>
         </div>
 
-        <p className="auth-story-footer">Viver de IA · engenharia aplicada a vendas.</p>
+        <p className="auth-story-footer">Trajetória Consultoria · Curitiba</p>
       </section>
 
       <section className="auth-panel">
         <div className="auth-panel-inner">
           <div className="auth-panel-brand">
-            <img src={viaLogo} alt="Viver de IA" />
-            <span className="via-pill">Nina</span>
+            <img src={brandLogo} alt="Trajetória Consultoria" />
+            <span className="via-pill">Lis</span>
           </div>
 
           <div className="auth-card">

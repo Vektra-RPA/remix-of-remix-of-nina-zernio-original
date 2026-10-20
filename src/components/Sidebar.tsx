@@ -7,8 +7,7 @@ import { Sidebar, SidebarBody, SidebarLink, useSidebar } from '@/components/ui/s
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
-import viaIcon from '@/assets/icon-via.png';
-import viaLogoWhite from '@/assets/logo-via-white.png';
+import brandLogoWhite from '@/assets/logo-trajetoria-white.png';
 import ThemeToggle from '@/components/ThemeToggle';
 import './Sidebar.css';
 
@@ -30,7 +29,7 @@ const menuItems = [
 const Logo = ({ companyName }: { companyName: string }) => {
   return (
     <Link to="/dashboard" className="app-sidebar-brand" aria-label="Ir para o dashboard">
-      <img src={viaLogoWhite} alt="Viver de IA" className="app-sidebar-brand-lockup" />
+      <img src={brandLogoWhite} alt="Trajetória Consultoria" className="app-sidebar-brand-lockup" />
       <div className="app-sidebar-workspace">
         <span className="app-sidebar-workspace-icon" aria-hidden="true">
           <Building2 />
@@ -49,7 +48,7 @@ const LogoIcon = () => {
     <Link to="/dashboard" className="flex items-center py-1">
       <div className="relative w-10 h-10 flex items-center justify-center flex-shrink-0">
         <div className="relative w-10 h-10 rounded-lg bg-sidebar-accent flex items-center justify-center p-1.5">
-          <img src={viaIcon} alt="Logo" className="w-full h-full object-contain" />
+          <img src="/favicon.svg" alt="Trajetória Consultoria" className="w-full h-full object-contain" />
         </div>
       </div>
     </Link>

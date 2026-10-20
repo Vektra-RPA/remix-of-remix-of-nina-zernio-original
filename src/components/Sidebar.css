@@ -153,7 +153,7 @@
 
 .app-sidebar-toggle {
   border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(10, 31, 59, 0.88);
+  background: rgba(27, 42, 56, 0.88);
   backdrop-filter: var(--via-glass-blur-bar);
   -webkit-backdrop-filter: var(--via-glass-blur-bar);
   box-shadow:
@@ -177,7 +177,7 @@
 }
 
 .app-sidebar-mobilebrand img {
-  width: 156px;
+  width: 120px;
   height: auto;
 }
 

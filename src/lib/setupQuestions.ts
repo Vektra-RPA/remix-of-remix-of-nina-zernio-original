@@ -89,7 +89,7 @@ export const ANSWERABLE_FIELDS: Record<string, AnswerableField> = {
   'identity.introduction': {
     label: 'Como a agente se apresenta',
     kind: 'longtext',
-    placeholder: 'Ex.: Oi, sou a Nina, do time da Viver de IA.',
+    placeholder: 'Ex.: Oi, sou a Lis, da Trajetória Consultoria.',
     apply: identityText('introduction'),
   },
   'identity.segment': {

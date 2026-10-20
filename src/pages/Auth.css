@@ -131,17 +131,17 @@
 
 .auth-panel {
   --background: 0 0% 100%;
-  --foreground: 214 71% 13.5%;
+  --foreground: 209 34.9% 16.3%;
   --card: 0 0% 100%;
-  --card-foreground: 214 71% 13.5%;
-  --primary: 214 71% 13.5%;
+  --card-foreground: 209 34.9% 16.3%;
+  --primary: 202 74% 34.7%;
   --primary-foreground: 0 0% 100%;
   --secondary: 220 23.1% 97.5%;
   --secondary-foreground: 218 23.5% 26.7%;
   --muted: 216 20% 95.1%;
   --muted-foreground: 219 15.1% 36.5%;
   --accent: 218 17.4% 91%;
-  --accent-foreground: 214 71% 13.5%;
+  --accent-foreground: 209 34.9% 16.3%;
   --border: 218 17.4% 91%;
   --input: 217 16% 84.1%;
   --ring: 214 52% 24.5%;
@@ -154,10 +154,10 @@
   --via-text-body: var(--via-gray-700);
   --via-text-muted: var(--via-gray-600);
   --via-text-soft: var(--via-gray-500);
-  --via-border-soft: rgba(10, 31, 59, 0.08);
+  --via-border-soft: rgba(27, 42, 56, 0.08);
   --via-border-hairline: var(--via-gray-200);
   --via-edge-hi: rgba(255, 255, 255, 0.95);
-  --via-glass-ring: 1px solid rgba(10, 31, 59, 0.08);
+  --via-glass-ring: 1px solid rgba(27, 42, 56, 0.08);
   --via-glass-card: linear-gradient(
     180deg,
     rgba(255, 255, 255, 0.96) 0%,
@@ -191,8 +191,6 @@
 .auth-panel-brand img {
   width: 176px;
   height: auto;
-  filter: brightness(0);
-  opacity: 0.88;
 }
 
 .auth-panel-brand .via-pill {

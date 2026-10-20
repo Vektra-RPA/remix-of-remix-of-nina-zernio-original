@@ -1,5 +1,5 @@
 /*
- * Viver de IA · Design System v0.6.1
+ * Trajetória Consultoria · Design System v0.6.1
  * =============================================================
  * A fonte de verdade das cores é src/styles/via-tokens.css — cópia literal
  * de src/styles/tokens.css do reference site (rafaelmilagre7/viver-de-ia-ds).
@@ -45,12 +45,12 @@
     --via-font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
 
     --background: 0 0% 100%; /* --via-bg · white */
-    --foreground: 214 71% 13.5%; /* --via-text-primary · navy #0A1F3B */
+    --foreground: 209 34.9% 16.3%; /* --via-text-primary · navy #1B2A38 */
     --card: 0 0% 100%; /* --via-surface */
-    --card-foreground: 214 71% 13.5%;
+    --card-foreground: 209 34.9% 16.3%;
     --popover: 0 0% 100%; /* --via-surface-elev */
-    --popover-foreground: 214 71% 13.5%;
-    --primary: 214 71% 13.5%; /* --via-navy · única cor de marca */
+    --popover-foreground: 209 34.9% 16.3%;
+    --primary: 202 74% 34.7%; /* azul Trajetória #17699A · cor de marca */
     --primary-foreground: 0 0% 100%;
     --secondary: 220 23.1% 97.5%; /* --via-gray-50 #F7F8FA */
     --secondary-foreground: 218 23.5% 26.7%; /* --via-gray-700 */
@@ -63,7 +63,7 @@
        até para ícone essencial. O soft mantém a hierarquia e passa (5.21:1). */
     --faint: 219 12.8% 44.5%; /* --via-text-soft #636D80 */
     --accent: 218 17.4% 91%; /* --via-gray-200 #E4E7EC */
-    --accent-foreground: 214 71% 13.5%;
+    --accent-foreground: 209 34.9% 16.3%;
     /* Coral e success levam meio ponto de luminosidade a menos que o hex
        canônico (54.1→53.6 e 33.1→32.1). Motivo: no DS eles pintam superfície
        e bolinha de presença; aqui viram TEXTO de status, e nos valores
@@ -75,7 +75,7 @@
     --success-foreground: 0 0% 100%;
     --border: 218 17.4% 91%; /* --via-border-hairline · gray-200 */
     --input: 217 16% 84.1%; /* --via-gray-300 */
-    --ring: 214 52% 24.5%; /* --via-blue #1E3A5F */
+    --ring: 202 74% 34.7%; /* --via-blue #17699A */
 
     /* Raio: componentes shadcn que leem --radius direto (sidebar) pegam o
        mesmo valor de `rounded-lg`, que o tailwind.config aponta pro md do
@@ -83,22 +83,22 @@
     --radius: var(--via-radius-md); /* 14px */
 
     /* Sidebar · navy sólido nos dois temas (a marca de pé no chrome) */
-    --sidebar-background: 214 71% 13.5%; /* --via-navy */
+    --sidebar-background: 209 34.9% 16.3%; /* --via-navy */
     --sidebar-foreground: 217 16% 84.1%; /* --via-gray-300 */
     --sidebar-primary: 0 0% 100%;
-    --sidebar-primary-foreground: 214 71% 13.5%;
-    --sidebar-accent: 212 44.7% 29.8%; /* --via-blue-soft */
+    --sidebar-primary-foreground: 209 34.9% 16.3%;
+    --sidebar-accent: 202 74% 34.7%; /* azul Trajetória · item ativo */
     --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 214 52% 24.5%; /* --via-blue */
-    --sidebar-ring: 213 27.8% 66.9%;
+    --sidebar-border: 209 30% 24%; /* borda sobre o azul-escuro */
+    --sidebar-ring: 204 45.8% 67.5%;
 
     /* Data-viz · rampa monocromática do DS (--via-chart-1..5).
        Regra da casa: 3+ séries NÃO ganham cor nova — usar small multiples. */
-    --chart-1: 214 71% 13.5%;
-    --chart-2: 213 40.7% 33.7%;
-    --chart-3: 213 25.4% 49.4%;
-    --chart-4: 213 27.8% 66.9%;
-    --chart-5: 214 26.9% 81.8%;
+    --chart-1: 209 34.9% 16.3%;
+    --chart-2: 202 74% 34.7%;
+    --chart-3: 203 45.5% 52.5%;
+    --chart-4: 204 45.8% 67.5%;
+    --chart-5: 205 45.9% 85.5%;
 
     /* Profundidade do produto. O DS canônico é white-first, mas o vidro só
        aparece quando existe contraste atrás dele. Estes aliases não mudam
@@ -132,7 +132,7 @@
     --popover-foreground: 220 37.5% 96.9%;
     /* No escuro o navy vira fundo, não destaque: primary sobe pra um azul
        claro que passa AA como texto e como preenchimento. */
-    --primary: 215 33.8% 74.5%; /* --via-chart-3 dark #A8BAD4 */
+    --primary: 204 45.8% 67.5%; /* --via-chart-3 dark #A8BAD4 */
     --primary-foreground: 220 48.8% 8.4%;
     --secondary: 222 46.4% 11%; /* --via-gray-50 dark #0F1729 */
     --secondary-foreground: 217 16% 84.1%;
@@ -150,21 +150,21 @@
     --success-foreground: 220 48.8% 8.4%;
     --border: 220 40% 17.6%;
     --input: 220 40% 22%;
-    --ring: 215 33.8% 74.5%;
+    --ring: 204 45.8% 67.5%;
 
     /* Sidebar mantém navy — um passo abaixo do canvas pra separar do conteúdo */
     --sidebar-background: 222 46.4% 11%; /* --via-gray-50 dark */
     --sidebar-foreground: 215 17.4% 72.9%;
-    --sidebar-primary: 215 33.8% 74.5%;
+    --sidebar-primary: 204 45.8% 67.5%;
     --sidebar-primary-foreground: 220 48.8% 8.4%;
     --sidebar-accent: 220 40% 17.6%;
     --sidebar-accent-foreground: 220 37.5% 96.9%;
     --sidebar-border: 220 40% 17.6%;
-    --sidebar-ring: 215 33.8% 74.5%;
+    --sidebar-ring: 204 45.8% 67.5%;
 
     --chart-1: 214 31.8% 56.9%; /* --via-chart-* dark · rampa clara */
     --chart-2: 215 32.6% 65.7%;
-    --chart-3: 215 33.8% 74.5%;
+    --chart-3: 204 45.8% 67.5%;
     --chart-4: 215 33.3% 82.9%;
     --chart-5: 215 37.8% 91.2%;
 
