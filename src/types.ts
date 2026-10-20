@@ -363,7 +363,7 @@ export function transformDBToUIConversation(
     unreadCount,
     tags: [...(conv.tags || []), ...(conv.contact?.tags || [])],
     messages: sortedMessages.map(transformDBToUIMessage),
-    clientMemory: conv.contact?.client_memory || getDefaultClientMemory(),
+    clientMemory: normalizeClientMemory(conv.contact?.client_memory),
     notes: conv.contact?.notes || null
   };
 }
@@ -421,6 +421,26 @@ function formatRelativeTime(dateStr: string): string {
 function formatMessageTime(dateStr: string): string {
   const date = new Date(dateStr);
   return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * Contatos de outras origens (ex.: captação Apollo) guardam só parte da memória
+ * (apollo, lead_state…). A UI lê lead_profile / sales_intelligence /
+ * interaction_summary direto, então os blocos ausentes vêm dos padrões em vez de
+ * derrubar a tela (Chat ao vivo e detalhe do Pipeline ficavam em branco).
+ */
+export function normalizeClientMemory(raw: unknown): ClientMemory {
+  const base = getDefaultClientMemory();
+  const mem = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Partial<ClientMemory>;
+  return {
+    ...base,
+    ...mem,
+    lead_profile: { ...base.lead_profile, ...(mem.lead_profile ?? {}) },
+    sales_intelligence: { ...base.sales_intelligence, ...(mem.sales_intelligence ?? {}) },
+    lead_state: { ...base.lead_state, ...(mem.lead_state ?? {}) },
+    interaction_summary: { ...base.interaction_summary, ...(mem.interaction_summary ?? {}) },
+    conversation_history: Array.isArray(mem.conversation_history) ? mem.conversation_history : base.conversation_history,
+  } as ClientMemory;
 }
 
 function getDefaultClientMemory(): ClientMemory {

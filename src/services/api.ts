@@ -10,7 +10,8 @@ import {
   DBConversation,
   DBMessage,
   UIConversation,
-  transformDBToUIConversation
+  transformDBToUIConversation,
+  normalizeClientMemory
 } from '../types';
 
 // Helper function to get current user ID
@@ -827,7 +828,7 @@ export const api = {
       wonAt: d.won_at,
       lostAt: d.lost_at,
       lostReason: d.lost_reason,
-      clientMemory: d.contact?.client_memory || null,
+      clientMemory: d.contact?.client_memory ? normalizeClientMemory(d.contact.client_memory) : null,
       conversationId: convMap.get(d.contact_id) ?? undefined,
     }));
   },
