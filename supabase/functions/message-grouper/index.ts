@@ -108,7 +108,8 @@ serve(async (req) => {
         // Get owner settings for this phone_number_id
         const { data: ownerSettings } = await supabase
           .from('nina_settings')
-          .select('user_id, whatsapp_access_token')
+          // Chaves de transcrição (ElevenLabs / OpenAI) também: sem elas o áudio do lead não é ouvido.
+          .select('user_id, whatsapp_access_token, elevenlabs_api_key, openai_api_key')
           .eq('whatsapp_phone_number_id', phoneNumberId)
           .maybeSingle();
 
@@ -324,23 +325,38 @@ async function combineAndTranscribeMessages(
       const audioMediaId = messageData.audio?.id;
       const transcriber = resolveTranscriber(settings, lovableApiKey);
       let transcribed = false;
-      if (audioMediaId && settings?.whatsapp_access_token && transcriber) {
+      let failure = '';
+      if (!audioMediaId) failure = 'mensagem de áudio sem media_id';
+      else if (!settings?.whatsapp_access_token) failure = 'sem token do WhatsApp para baixar a mídia';
+      else if (!transcriber) failure = 'nenhum provedor de transcrição configurado';
+      else {
         console.log('[MessageGrouper] Transcribing audio:', audioMediaId, 'via', transcriber.kind);
         const audioBuffer = await downloadWhatsAppMedia(settings, audioMediaId);
-        if (audioBuffer) {
-          const transcription = await transcribeAudio(audioBuffer, transcriber);
-          if (transcription) {
-            content = transcription;
+        if (!audioBuffer) failure = `falha ao baixar o áudio no WhatsApp: ${lastDownloadError}`;
+        else {
+          const { text, error } = await transcribeAudio(audioBuffer, transcriber);
+          if (text) {
+            content = text;
             transcribed = true;
             // Update the message in database with transcription
+            const { transcription_error: _old, ...metadata } = (dbMsg.metadata ?? {}) as Record<string, unknown>;
             await supabase
               .from('messages')
-              .update({ content: transcription })
+              .update({ content: text, metadata })
               .eq('id', dbMsg.id);
+          } else {
+            failure = `${transcriber.kind}: ${error ?? 'resposta sem texto'}`;
           }
         }
       }
-      if (!transcribed) content = AUDIO_NOT_TRANSCRIBED_NOTE;
+      if (!transcribed) {
+        content = AUDIO_NOT_TRANSCRIBED_NOTE;
+        // Motivo fica na própria mensagem: os logs da função não são visíveis fora do painel.
+        await supabase
+          .from('messages')
+          .update({ metadata: { ...(dbMsg.metadata ?? {}), transcription_error: failure.slice(0, 300) } })
+          .eq('id', dbMsg.id);
+      }
     }
 
     if (content && content !== '[áudio - processando transcrição...]') {
@@ -350,6 +366,9 @@ async function combineAndTranscribeMessages(
 
   return contentParts.join('\n');
 }
+
+// Motivo da última falha de download (gravado na mensagem quando a transcrição falha).
+let lastDownloadError = '';
 
 // Download media from WhatsApp API
 async function downloadWhatsAppMedia(settings: any, mediaId: string): Promise<ArrayBuffer | null> {
@@ -369,7 +388,9 @@ async function downloadWhatsAppMedia(settings: any, mediaId: string): Promise<Ar
     );
 
     if (!mediaInfoResponse.ok) {
-      console.error('[MessageGrouper] Failed to get media info:', await mediaInfoResponse.text());
+      const detail = await mediaInfoResponse.text();
+      console.error('[MessageGrouper] Failed to get media info:', detail);
+      lastDownloadError = `media info HTTP ${mediaInfoResponse.status} ${detail.slice(0, 160)}`;
       return null;
     }
 
@@ -378,6 +399,7 @@ async function downloadWhatsAppMedia(settings: any, mediaId: string): Promise<Ar
 
     if (!mediaUrl) {
       console.error('[MessageGrouper] No media URL in response');
+      lastDownloadError = 'resposta sem URL da mídia';
       return null;
     }
 
@@ -388,19 +410,25 @@ async function downloadWhatsAppMedia(settings: any, mediaId: string): Promise<Ar
     });
 
     if (!mediaResponse.ok) {
-      console.error('[MessageGrouper] Failed to download media:', await mediaResponse.text());
+      const detail = await mediaResponse.text();
+      console.error('[MessageGrouper] Failed to download media:', detail);
+      lastDownloadError = `download HTTP ${mediaResponse.status} ${detail.slice(0, 160)}`;
       return null;
     }
 
     return await mediaResponse.arrayBuffer();
   } catch (error) {
     console.error('[MessageGrouper] Error downloading media:', error);
+    lastDownloadError = error instanceof Error ? error.message : String(error);
     return null;
   }
 }
 
 // Transcribe audio (Whisper via Lovable AI Gateway ou OpenAI; ou ElevenLabs Scribe)
-async function transcribeAudio(audioBuffer: ArrayBuffer, transcriber: Transcriber): Promise<string | null> {
+async function transcribeAudio(
+  audioBuffer: ArrayBuffer,
+  transcriber: Transcriber,
+): Promise<{ text: string | null; error: string | null }> {
   try {
     console.log('[MessageGrouper] Transcribing audio, size:', audioBuffer.byteLength, 'bytes');
 
@@ -431,17 +459,17 @@ async function transcribeAudio(audioBuffer: ArrayBuffer, transcriber: Transcribe
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[MessageGrouper] Transcription error:', response.status, errorText);
-      return null;
+      return { text: null, error: `HTTP ${response.status} ${errorText.slice(0, 220)}` };
     }
 
     const result = await response.json();
     const transcription = result.text;
-    
+
     console.log('[MessageGrouper] Transcription result:', transcription);
-    return transcription || null;
+    return { text: transcription || null, error: transcription ? null : 'resposta sem texto' };
   } catch (error) {
     console.error('[MessageGrouper] Error transcribing audio:', error);
-    return null;
+    return { text: null, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
