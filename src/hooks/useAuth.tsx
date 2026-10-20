@@ -25,6 +25,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
+
+        // Com confirmação de e-mail ligada, o signUp volta sem sessão e o login
+        // chega pelo link do e-mail (sem passar pelo signIn). Garante profile e
+        // papel em qualquer entrada. Fora do callback: chamar o client aqui
+        // dentro trava o supabase-js.
+        if (event === 'SIGNED_IN' && session) {
+          setTimeout(() => { void bootstrapUser(); }, 0);
+        }
       }
     );
 
