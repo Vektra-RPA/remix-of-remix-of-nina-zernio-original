@@ -1,11 +1,17 @@
 /**
- * Acesso à Apollo.io pelo connector gateway da Lovable.
- * Nunca chamar api.apollo.io direto: o gateway injeta a chave real.
+ * Acesso à Apollo.io. No Lovable Cloud passa pelo connector gateway da Lovable
+ * (que injeta a chave real); no Supabase próprio — sem LOVABLE_API_KEY — chama a
+ * api.apollo.io direto, autenticando com APOLLO_API_KEY no header X-Api-Key.
  */
 
 import { derivePersona, type Persona } from './lead-identity.ts';
 
 const GATEWAY_URL = 'https://connector-gateway.lovable.dev/apollo';
+const APOLLO_DIRECT_URL = 'https://api.apollo.io';
+
+function apolloBaseUrl(): string {
+  return Deno.env.get('LOVABLE_API_KEY') ? GATEWAY_URL : APOLLO_DIRECT_URL;
+}
 
 export class ApolloError extends Error {
   constructor(public status: number, public body: string) {
@@ -20,13 +26,13 @@ export class ApolloError extends Error {
 function headers(): Record<string, string> {
   const lovableKey = Deno.env.get('LOVABLE_API_KEY');
   const apolloKey = Deno.env.get('APOLLO_API_KEY');
-  if (!lovableKey) throw new Error('LOVABLE_API_KEY não configurada');
   if (!apolloKey) throw new Error('APOLLO_API_KEY não configurada');
-  return { Authorization: `Bearer ${lovableKey}`, 'X-Connection-Api-Key': apolloKey };
+  if (lovableKey) return { Authorization: `Bearer ${lovableKey}`, 'X-Connection-Api-Key': apolloKey };
+  return { 'X-Api-Key': apolloKey, 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' };
 }
 
 function buildUrl(path: string, params: Record<string, string | string[] | undefined>): string {
-  const url = new URL(`${GATEWAY_URL}${path}`);
+  const url = new URL(`${apolloBaseUrl()}${path}`);
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
     if (Array.isArray(value)) {

@@ -35,7 +35,7 @@ jobs:
             exit 1
           fi
           code=$(curl -sS -o /tmp/resp.json -w "%{http_code}" \
-            -X POST "https://lxhfeovrsumtyxbshalr.supabase.co/functions/v1/cadence-worker" \
+            -X POST "https://emiupfzywiwtktoxfgeq.supabase.co/functions/v1/cadence-worker" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             --max-time 60 \

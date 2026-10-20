@@ -401,18 +401,44 @@ async function callProvider(params: ChatCallParams): Promise<NormalizedChatResul
   }
 }
 
+/** Chaves efetivas: as das nina_settings têm precedência; senão, as do ambiente. */
+function effectiveKeys(keys: LlmApiKeys): LlmApiKeys {
+  return {
+    lovable: keys.lovable || Deno.env.get('LOVABLE_API_KEY') || '',
+    anthropic: keys.anthropic || Deno.env.get('ANTHROPIC_API_KEY') || null,
+    openai: keys.openai || Deno.env.get('OPENAI_API_KEY') || null,
+  };
+}
+
+/**
+ * Fora do Lovable Cloud (Supabase próprio) não existe o gateway de IA da Lovable.
+ * Nesse caso o provedor 'lovable' passa a ser Anthropic (ou OpenAI, se só houver
+ * essa chave), mantendo o mesmo tier do modelo pedido (chat → Sonnet).
+ */
+function resolveRuntimeProvider(params: ChatCallParams): ChatCallParams {
+  const apiKeys = effectiveKeys(params.apiKeys);
+  if (params.provider !== 'lovable' || apiKeys.lovable) return { ...params, apiKeys };
+  const target: LlmProvider | null = apiKeys.anthropic ? 'anthropic' : apiKeys.openai ? 'openai' : null;
+  if (!target) return { ...params, apiKeys };
+  const tier = LLM_CATALOG.lovable.models.find((m) => m.id === params.model)?.tier ?? 'medium';
+  return { ...params, apiKeys, provider: target, model: LLM_CATALOG[target].tierDefault[tier] };
+}
+
 /**
  * Chama o provedor escolhido; se for externo e falhar (chave ausente, 4xx/5xx,
- * rede), refaz a MESMA chamada no Lovable AI com o modelo default do gateway.
- * Erros do próprio Lovable propagam (429/402 têm semântica de retry na fila).
+ * rede), refaz a MESMA chamada no Lovable AI com o modelo default do gateway —
+ * só quando o gateway existe. Erros do próprio Lovable propagam (429/402 têm
+ * semântica de retry na fila).
  */
-export async function callChatWithFallback(params: ChatCallParams): Promise<NormalizedChatResult> {
+export async function callChatWithFallback(rawParams: ChatCallParams): Promise<NormalizedChatResult> {
+  const params = resolveRuntimeProvider(rawParams);
   if (params.provider === 'lovable') {
     return await callProvider(params);
   }
   try {
     return await callProvider(params);
   } catch (err) {
+    if (!params.apiKeys.lovable) throw err; // sem gateway Lovable não há para onde cair
     console.warn(`[LLM] Provedor ${params.provider} falhou (${err instanceof Error ? err.message : err}) — fallback para Lovable AI`);
     const fallback = await callProvider({
       ...params,

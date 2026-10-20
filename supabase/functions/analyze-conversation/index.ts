@@ -1,12 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { callChatWithFallback, type NormalizedToolCall } from "../_shared/llm.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
-
-const LOVABLE_AI_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -236,30 +235,29 @@ ESTÁGIO ATUAL DO DEAL: ${currentDeal?.stage || 'Sem estágio'}` : ''}
 2. Determine para qual estágio do pipeline o deal deve ir com base nos critérios fornecidos`
       : `Você é um analista de conversas de vendas. Analise a interação e extraia insights estruturados para atualizar a memória do cliente.`;
 
-    // Call AI to extract insights AND determine deal stage (if applicable)
-    const analysisResponse = await fetch(LOVABLE_AI_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${lovableApiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
+    // Call AI to extract insights AND determine deal stage (if applicable).
+    // Passa pelo dispatcher compartilhado: usa o gateway da Lovable quando existe
+    // e, no Supabase próprio, cai em Anthropic (ANTHROPIC_API_KEY) no mesmo tier.
+    let toolCalls: NormalizedToolCall[] = [];
+    try {
+      const analysis = await callChatWithFallback({
+        provider: 'lovable',
         model: 'google/gemini-2.5-flash',
+        apiKeys: { lovable: lovableApiKey ?? '' },
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: conversationSnippet }
         ],
-        tools: tools
-      })
-    });
-
-    if (!analysisResponse.ok) {
-      console.error('[Analyze] AI analysis failed:', analysisResponse.status);
+        tools,
+        temperature: 0.2,
+        maxTokens: 2000,
+        toolChoice: 'auto',
+      });
+      toolCalls = analysis.toolCalls;
+    } catch (aiError) {
+      console.error('[Analyze] AI analysis failed:', aiError instanceof Error ? aiError.message : aiError);
       throw new Error('AI analysis failed');
     }
-
-    const analysisData = await analysisResponse.json();
-    const toolCalls = analysisData.choices?.[0]?.message?.tool_calls || [];
     
     if (toolCalls.length === 0) {
       console.error('[Analyze] No tool calls in AI response');
