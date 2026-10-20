@@ -22,8 +22,10 @@ const corsHeaders = {
 // deno-lint-ignore no-explicit-any
 type SupabaseClient = any;
 
+// Exatamente os escopos autorizados na delegação do Admin Console (os mesmos do
+// google_calendar_client.py). Pedir um escopo fora da lista faz o Google negar o token.
 const SCOPES = [
-  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/calendar.events',
 ];
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -170,6 +172,18 @@ serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const action = typeof body.action === 'string' ? body.action : 'sync_event';
+
+    // Diagnóstico só-leitura: confirma chave + delegação + acesso à agenda do
+    // organizador sem criar nada (lista no máximo 1 evento futuro, só a contagem).
+    if (action === 'check') {
+      const token = await getAccessToken(sa, organizer);
+      const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=1&singleEvents=true&timeMin=${encodeURIComponent(new Date().toISOString())}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return json({ ok: false, error: `events.list falhou (${res.status}): ${JSON.stringify(data).slice(0, 300)}` }, 502);
+      return json({ ok: true, organizer, timeZone: data.timeZone ?? null, upcomingSample: Array.isArray(data.items) ? data.items.length : 0 });
+    }
+
     const appointmentId = typeof body.appointmentId === 'string' ? body.appointmentId : '';
     if (!appointmentId) return json({ ok: false, error: 'appointmentId obrigatório' }, 400);
 
