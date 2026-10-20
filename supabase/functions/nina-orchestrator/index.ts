@@ -727,7 +727,13 @@ async function syncAppointmentToExternalCalendar(
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
     if (!supabaseUrl || !serviceKey) return;
-    const response = await fetch(`${supabaseUrl}/functions/v1/nylas-calendar`, {
+    // Agenda do Fabiano via service account (opt-in): com GOOGLE_SERVICE_ACCOUNT_JSON
+    // + FABIANO_CALENDAR_EMAIL setados, o evento vai pra agenda DELE (organizador
+    // real, sem ele conectar nada) em vez da conta conectada por Nylas — assim não
+    // há convite duplicado. Sem essa config, segue pelo Nylas exatamente como antes.
+    const useGoogle = !!Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') && !!Deno.env.get('FABIANO_CALENDAR_EMAIL');
+    const fn = useGoogle ? 'google-calendar' : 'nylas-calendar';
+    const response = await fetch(`${supabaseUrl}/functions/v1/${fn}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${serviceKey}`,
@@ -737,7 +743,7 @@ async function syncAppointmentToExternalCalendar(
       body: JSON.stringify({ action, appointmentId }),
     });
     if (!response.ok) {
-      console.error('[Nina] Calendar sync failed:', response.status, await response.text());
+      console.error(`[Nina] Calendar sync failed (${fn}):`, response.status, await response.text());
     }
   } catch (error) {
     console.error('[Nina] Calendar sync request failed:', error);
