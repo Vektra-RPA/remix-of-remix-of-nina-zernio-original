@@ -1,22 +1,18 @@
 name: cadence-cron
 
-# Disparador externo da cadência da Lis, independente do scheduler do Lovable
-# Cloud (que estava falhando). A cada ~5 min chama a Edge Function cadence-worker
-# com {"action":"run"}. A própria função só age no horário útil (9h-17h, dias
-# úteis, America/Sao_Paulo) e ignora o resto — então rodar 24/7 é seguro (no-op
-# fora da janela). É idempotente: trava atômica evita envio duplicado se o cron
-# oficial do Lovable voltar depois.
+# Disparo MANUAL da cadência da Lis (aba Actions -> Run workflow). O agendamento
+# oficial agora é o pg_cron do próprio Supabase (job lis-cadence-worker, migration
+# 20261020000100_cron_sweeps.sql); este workflow fica só como contingência.
+# A função só age no horário útil (9h-17h, dias úteis, America/Sao_Paulo) e é
+# idempotente (trava atômica evita envio duplicado).
 #
-# Pré-requisitos:
+# Pré-requisitos para usar:
 # 1. Secret do repositório no GitHub: CADENCE_TRIGGER_TOKEN
 #    (Settings -> Secrets and variables -> Actions -> New repository secret).
-# 2. O MESMO valor setado como secret CADENCE_TRIGGER_TOKEN no Lovable Cloud,
-#    e a função cadence-worker deployada (ela já aceita esse token).
+# 2. O MESMO valor setado como secret CADENCE_TRIGGER_TOKEN no Supabase.
 
 on:
-  schedule:
-    - cron: '*/5 * * * *' # a cada 5 minutos (UTC); GitHub pode atrasar sob carga
-  workflow_dispatch: {} # permite rodar manualmente pela aba Actions
+  workflow_dispatch: {} # só manual; o agendamento é o pg_cron
 
 concurrency:
   group: cadence-cron
