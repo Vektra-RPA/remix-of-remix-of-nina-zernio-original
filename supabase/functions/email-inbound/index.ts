@@ -193,6 +193,41 @@ async function handleEvent(supabase: SupabaseClient, type: string, data: Record<
 }
 
 /** Resposta de lead: captura, pausa a cadência e manda para atendimento (status 'human'). */
+/**
+ * Resend Receiving: o evento `email.received` traz só os metadados (remetente,
+ * assunto, id). O texto vem da API de e-mails recebidos — precisa de chave com
+ * acesso total; sem ela, segue só com os metadados (a cadência pausa do mesmo jeito).
+ */
+async function inboundFromResendEvent(data: Record<string, unknown>): Promise<Inbound> {
+  const base = extractInbound(data);
+  if (base.text) return base;
+  const id = typeof data.email_id === 'string' ? data.email_id : typeof data.id === 'string' ? data.id : '';
+  const key = Deno.env.get('RESEND_API_KEY');
+  if (!id || !key) return base;
+  try {
+    const res = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      console.error('[email-inbound] corpo do e-mail recebido indisponível', res.status, (await res.text()).slice(0, 200));
+      return base;
+    }
+    const full = extractInbound(record(await res.json()));
+    return {
+      from: base.from ?? full.from,
+      subject: base.subject ?? full.subject,
+      text: full.text,
+      messageId: base.messageId ?? full.messageId,
+      inReplyTo: base.inReplyTo ?? full.inReplyTo,
+      references: base.references ?? full.references,
+    };
+  } catch (error) {
+    console.error('[email-inbound] falha ao buscar o e-mail recebido', error);
+    return base;
+  }
+}
+
 async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): Promise<Response> {
   const email = inbound.from!;
   const contact = await findContactByEmail(supabase, email);
@@ -242,8 +277,10 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
 
   // Regra dura do playbook: qualquer resposta pausa a automação (cancela a cadência).
   // A conversa segue com a Nina, que responde por e-mail (orquestrador channel-aware).
+  // Sem o texto da resposta a Lis responderia às cegas: pausa e passa para uma pessoa.
+  const hasBody = !!inbound.text;
   await supabase.from('conversations').update({
-    status: 'nina',
+    status: hasBody ? 'nina' : 'human',
     is_active: true,
     last_message_at: new Date().toISOString(),
     metadata: { ...record(conversation.metadata), last_email_subject: inbound.subject, last_email_message_id: inbound.messageId },
@@ -261,7 +298,7 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
 
   // Encaminha para a Nina processar e responder por e-mail (mesma fila do WhatsApp).
   const messageId = (inserted as { id?: string } | null)?.id ?? null;
-  if (messageId) {
+  if (messageId && hasBody) {
     await supabase.from('nina_processing_queue').insert({
       message_id: messageId,
       conversation_id: conversation.id,
@@ -278,7 +315,7 @@ async function handleInboundReply(supabase: SupabaseClient, inbound: Inbound): P
     (globalThis as any).EdgeRuntime?.waitUntil?.(trigger);
   }
 
-  return json({ ok: true, contact_id: contact.id, conversation_id: conversation.id, paused_cadence: true, status: 'nina', queued: !!messageId });
+  return json({ ok: true, contact_id: contact.id, conversation_id: conversation.id, paused_cadence: true, status: hasBody ? 'nina' : 'human', queued: !!messageId && hasBody });
 }
 
 serve(async (req) => {
@@ -314,6 +351,15 @@ serve(async (req) => {
 
     // Evento de entrega/bounce/complaint do Resend.
     const eventType = typeof body.type === 'string' ? body.type : '';
+    if (eventType === 'email.received') {
+      const received = await inboundFromResendEvent(record(body.data));
+      if (!received.from) return json({ ok: true, ignored: 'email.received sem remetente' });
+      if (isAutoReply(record(body.data), received.subject)) {
+        console.log('[email-inbound] auto-resposta (OOO) ignorada:', received.from, '—', received.subject);
+        return json({ ok: true, ignored: 'auto-reply (OOO)', from: received.from });
+      }
+      return await handleInboundReply(supabase, received);
+    }
     if (eventType.startsWith('email.')) {
       return await handleEvent(supabase, eventType, record(body.data));
     }
