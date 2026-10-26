@@ -529,11 +529,13 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
       if (wa.sent) {
         await supabase.from('cadence_state').update({ status: 'sent', sent_at: new Date().toISOString(), last_error: null }).eq('id', item.id);
         sent += 1;
+        await anchorNext(supabase, contact.id, item.step);
       } else {
+        // Toque pulado não reancora: o e-mail seguinte mantém o dia do playbook
+        // (sem isso o D6 virava D9 sempre que o WhatsApp estava desligado).
         await markStep(supabase, item.id, 'skipped', wa.reason);
         skipped += 1;
       }
-      await anchorNext(supabase, contact.id, item.step);
       continue;
     }
 
