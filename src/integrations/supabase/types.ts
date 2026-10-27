@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.17"
+    PostgrestVersion: "14.18"
   }
   public: {
     Tables: {
@@ -1111,11 +1111,14 @@ export type Database = {
       }
       cadence_state: {
         Row: {
+          attempts: number
           channel: string
           contact_id: string
           created_at: string
           id: string
           last_error: string | null
+          message_id: string | null
+          retried_at: string | null
           scheduled_at: string
           sent_at: string | null
           status: string
@@ -1124,11 +1127,14 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          attempts?: number
           channel?: string
           contact_id: string
           created_at?: string
           id?: string
           last_error?: string | null
+          message_id?: string | null
+          retried_at?: string | null
           scheduled_at: string
           sent_at?: string | null
           status?: string
@@ -1137,11 +1143,14 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          attempts?: number
           channel?: string
           contact_id?: string
           created_at?: string
           id?: string
           last_error?: string | null
+          message_id?: string | null
+          retried_at?: string | null
           scheduled_at?: string
           sent_at?: string | null
           status?: string
@@ -1162,6 +1171,13 @@ export type Database = {
             columns: ["contact_id"]
             isOneToOne: false
             referencedRelation: "contacts_with_stats"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cadence_state_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
             referencedColumns: ["id"]
           },
         ]
@@ -2129,6 +2145,45 @@ export type Database = {
           },
         ]
       }
+      lead_outcomes: {
+        Row: {
+          contact_id: string
+          loss_reason: string | null
+          reply_type: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          contact_id: string
+          loss_reason?: string | null
+          reply_type?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          contact_id?: string
+          loss_reason?: string | null
+          reply_type?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lead_outcomes_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: true
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lead_outcomes_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: true
+            referencedRelation: "contacts_with_stats"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       message_grouping_queue: {
         Row: {
           contacts_data: Json | null
@@ -2360,6 +2415,7 @@ export type Database = {
           business_hours_start: string
           company_name: string | null
           created_at: string
+          demo_mode_enabled: boolean
           elevenlabs_api_key: string | null
           elevenlabs_model: string | null
           elevenlabs_similarity_boost: number
@@ -2412,6 +2468,7 @@ export type Database = {
           business_hours_start?: string
           company_name?: string | null
           created_at?: string
+          demo_mode_enabled?: boolean
           elevenlabs_api_key?: string | null
           elevenlabs_model?: string | null
           elevenlabs_similarity_boost?: number
@@ -2464,6 +2521,7 @@ export type Database = {
           business_hours_start?: string
           company_name?: string | null
           created_at?: string
+          demo_mode_enabled?: boolean
           elevenlabs_api_key?: string | null
           elevenlabs_model?: string | null
           elevenlabs_similarity_boost?: number
@@ -2542,6 +2600,21 @@ export type Database = {
           title?: string
           updated_at?: string | null
           user_id?: string | null
+        }
+        Relationships: []
+      }
+      preapproved_admins: {
+        Row: {
+          created_at: string
+          email: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
         }
         Relationships: []
       }
@@ -3076,6 +3149,7 @@ export type Database = {
       nina_settings_public: {
         Row: {
           company_name: string | null
+          demo_mode_enabled: boolean | null
           has_anthropic: boolean | null
           has_custom_prompt: boolean | null
           has_elevenlabs: boolean | null
@@ -3091,6 +3165,7 @@ export type Database = {
         }
         Insert: {
           company_name?: string | null
+          demo_mode_enabled?: boolean | null
           has_anthropic?: never
           has_custom_prompt?: never
           has_elevenlabs?: never
@@ -3106,6 +3181,7 @@ export type Database = {
         }
         Update: {
           company_name?: string | null
+          demo_mode_enabled?: boolean | null
           has_anthropic?: never
           has_custom_prompt?: never
           has_elevenlabs?: never
@@ -3285,6 +3361,10 @@ export type Database = {
           _user_id: string
         }
         Returns: boolean
+      }
+      invoke_edge_function: {
+        Args: { _body?: Json; _fn: string }
+        Returns: number
       }
       is_workspace_admin: {
         Args: { _user_id?: string; _workspace_id: string }

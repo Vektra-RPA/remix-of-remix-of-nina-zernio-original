@@ -6,19 +6,45 @@ import {
 import { Button } from '@/components/Button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { pilotApi, type PilotOverview } from '@/services/pilot';
+import {
+  pilotApi, LOSS_REASONS, REPLY_TYPE_LABEL,
+  type PilotLote, type PilotOverview, type PilotTouch, type ReplyType,
+} from '@/services/pilot';
 
 const fmtDate = (iso: string | null): string =>
   iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
 
+// Dia do playbook de cada toque da cadência (Passo 4).
+const TOUCH_DAY: Record<number, string> = { 1: 'D0', 2: 'D3', 3: 'D6', 4: 'D9', 5: 'D13' };
+
+const TOUCH_STYLE: Record<PilotTouch['state'], string> = {
+  pendente: 'text-muted-foreground border-border',
+  enviado: 'text-sky-500 border-sky-500/40',
+  entregue: 'text-emerald-500 border-emerald-500/40',
+  lido: 'text-emerald-500 border-emerald-500/60 bg-emerald-500/10',
+  barrado: 'text-red-500 border-red-500/40',
+  bounce: 'text-red-500 border-red-500/40',
+  pulado: 'text-muted-foreground border-dashed border-border',
+  cancelado: 'text-muted-foreground border-dashed border-border line-through',
+};
+
+const touchTitle = (t: PilotTouch): string =>
+  [`${TOUCH_DAY[t.step] ?? `Step ${t.step}`} · ${t.canal}: ${t.state}`, t.at ? fmtDate(t.at) : null, t.detail]
+    .filter(Boolean).join(' — ');
+
+const selectClass = 'w-full min-w-[9rem] rounded-lg border border-border bg-background p-1.5 text-xs';
+
 const Pilot: React.FC = () => {
   const [data, setData] = useState<PilotOverview | null>(null);
+  const [lote, setLote] = useState<PilotLote | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      setData(await pilotApi.fetchOverview());
+      const [overview, loteData] = await Promise.all([pilotApi.fetchOverview(), pilotApi.fetchLote()]);
+      setData(overview);
+      setLote(loteData);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Não foi possível carregar o painel do piloto.');
     } finally {
@@ -27,6 +53,23 @@ const Pilot: React.FC = () => {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Classificação da dona da campanha (Passo 7.1): grava e atualiza a linha.
+  const saveOutcome = async (contactId: string, patch: { reply_type?: ReplyType | null; loss_reason?: string | null }) => {
+    try {
+      await pilotApi.saveOutcome(contactId, patch);
+      setLote((cur) => cur && {
+        ...cur,
+        rows: cur.rows.map((r) => (r.contactId !== contactId ? r : {
+          ...r,
+          ...('reply_type' in patch ? { replyType: patch.reply_type ?? null } : {}),
+          ...('loss_reason' in patch ? { lossReason: patch.loss_reason ?? null } : {}),
+        })),
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Não foi possível salvar a classificação.');
+    }
+  };
 
   const funnel = data?.funnel;
   const cards = [
@@ -120,6 +163,120 @@ const Pilot: React.FC = () => {
               </div>
             ))}
           </div>
+        </section>
+
+        {/* Lote atual (Passos 7.3 e 7.4): números e uma linha por contato */}
+        <section className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <h2 className="text-lg font-semibold">Lote atual</h2>
+            {lote && <Badge variant="secondary">{lote.rows.length} contatos</Badge>}
+          </div>
+
+          {lote && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+              {lote.indicators.map((ind) => (
+                <div key={ind.label} className={`rounded-xl border p-4 ${ind.alert ? 'border-red-500/50 bg-red-500/5' : 'border-border'}`}>
+                  <p className="text-xs text-muted-foreground">{ind.label}</p>
+                  <p className="text-2xl font-semibold mt-1">{ind.value}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{ind.detail}</p>
+                  <p className="text-[11px] text-muted-foreground/80 mt-1">Referência: {ind.reference}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {lote && lote.rows.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border p-8 text-center">
+              <p className="text-sm text-muted-foreground">Nenhum contato em cadência ainda.</p>
+            </div>
+          )}
+
+          {lote && lote.rows.length > 0 && (
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b border-border">
+                    <th className="p-3 font-medium">Lead</th>
+                    <th className="p-3 font-medium">Persona</th>
+                    <th className="p-3 font-medium">Toques</th>
+                    <th className="p-3 font-medium">Entregue</th>
+                    <th className="p-3 font-medium">Respondeu</th>
+                    <th className="p-3 font-medium">Autorização</th>
+                    <th className="p-3 font-medium">Tipo de resposta</th>
+                    <th className="p-3 font-medium">Reunião</th>
+                    <th className="p-3 font-medium">Motivo de perda</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lote.rows.map((row) => (
+                    <tr key={row.contactId} className="border-b border-border/60 last:border-0 align-top">
+                      <td className="p-3 min-w-[12rem]">
+                        <p className="font-medium">{row.nome}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {[row.empresa !== '—' ? row.empresa : null, row.cargo !== '—' ? row.cargo : null].filter(Boolean).join(' · ')}
+                        </p>
+                      </td>
+                      <td className="p-3 whitespace-nowrap">{row.persona}{row.score !== null ? ` · ${row.score}` : ''}</td>
+                      <td className="p-3">
+                        <div className="flex gap-1">
+                          {row.touches.map((t) => (
+                            <span
+                              key={t.step}
+                              title={touchTitle(t)}
+                              className={`rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${TOUCH_STYLE[t.state]}`}
+                            >
+                              {TOUCH_DAY[t.step] ?? t.step}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="p-3">{row.entregue ? 'Sim' : 'Não'}</td>
+                      <td className="p-3">{row.respondeu ? 'Sim' : 'Não'}</td>
+                      <td className="p-3">{row.autorizacao === 'sim' ? 'Sim' : row.autorizacao === 'negada' ? 'Negada' : '—'}</td>
+                      <td className="p-3">
+                        <select
+                          className={selectClass}
+                          value={row.replyType ?? ''}
+                          onChange={(e) => saveOutcome(row.contactId, { reply_type: (e.target.value || null) as ReplyType | null })}
+                        >
+                          <option value="">
+                            {row.replyTypeSuggested ? `Sugestão: ${REPLY_TYPE_LABEL[row.replyTypeSuggested]}` : '—'}
+                          </option>
+                          {(Object.keys(REPLY_TYPE_LABEL) as ReplyType[]).map((key) => (
+                            <option key={key} value={key}>{REPLY_TYPE_LABEL[key]}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        {row.reuniao ? (
+                          <>
+                            <p>{row.reuniao}</p>
+                            <p className="text-xs text-muted-foreground">{row.qualificada ? 'Qualificada' : 'Não qualificada'}</p>
+                          </>
+                        ) : '—'}
+                      </td>
+                      <td className="p-3">
+                        <select
+                          className={selectClass}
+                          value={row.lossReason ?? ''}
+                          onChange={(e) => saveOutcome(row.contactId, { loss_reason: e.target.value || null })}
+                        >
+                          <option value="">{row.lossReasonSuggested ? `Sugestão: ${row.lossReasonSuggested}` : '—'}</option>
+                          {LOSS_REASONS.map((reason) => (
+                            <option key={reason} value={reason}>{reason}</option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground mt-2">
+            Passe o mouse nos toques para ver data e detalhe. Verde = entregue ou lido; vermelho = barrado pela Meta ou bounce.
+            “Sugestão” é o que o sistema inferiu; escolha um valor para registrar a classificação.
+          </p>
         </section>
 
         {/* Leads recentes */}
