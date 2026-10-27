@@ -5,10 +5,11 @@ import {
   CADENCE_STEPS,
   ENABLED_STEPS,
   renderCadenceEmail,
+  waTemplateBody,
   type CadencePersona,
 } from "../_shared/cadence-templates.ts";
 import { isExcludedEmail, isGenericEmail } from "../_shared/exclusions.ts";
-import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
+import { enqueueTemplateForContact, enqueueTemplateWithMessage } from "../_shared/template-dispatch.ts";
 import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 
 // Motor de cadência (porte do src/pipeline/cadencia.py da Lis Python) para edge function.
@@ -21,8 +22,10 @@ import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 // reclaim de órfãos presos em 'sending', cancelamento ao responder / opt-out.
 //
 // E-mail via a função email-send (que já faz rate limit + retry + descadastro). WhatsApp
-// fica desligado nos steps até o template da Meta ser aprovado (ENABLED_STEPS cobre só os
-// e-mails: D0, D6, D13).
+// (D3/D9) via template Meta aprovado por persona — ver trySendWhatsapp. Cada toque de
+// WhatsApp guarda a mensagem enviada (cadence_state.message_id): o D9 só sai se o D3
+// foi entregue, e o toque barrado pela Meta por limite de marketing ganha UMA nova
+// tentativa (runWaRetries).
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -49,6 +52,28 @@ function sendWeekdays(): number[] {
 }
 const DAILY_EMAIL_MAX = Math.max(1, Number(Deno.env.get('CADENCE_DAILY_EMAIL_MAX') || 25));
 const OPENING_END_HOUR = Number(Deno.env.get('CADENCE_OPENING_END_HOUR') || 12);
+// WhatsApp (playbook 3.4): volume baixo no piloto, até 20–30 contatos por dia.
+const DAILY_WA_MAX = Math.max(1, Number(Deno.env.get('CADENCE_DAILY_WA_MAX') || 25));
+// Espalha os toques ao longo da manhã em vez de disparar a cota inteira de uma vez
+// (o cron roda a cada 5 min: 5 por passada = 25 em ~25 min).
+const WA_PER_PASS = Math.max(1, Number(Deno.env.get('CADENCE_WA_PER_PASS') || 5));
+// Steps de WhatsApp obrigatórios: enquanto o template não estiver aprovado na Meta,
+// o toque ESPERA (fica pendente e segura os seguintes) em vez de ser pulado.
+function waHoldSteps(): number[] {
+  return (Deno.env.get('CADENCE_WA_HOLD_STEPS') || '')
+    .split(',').map((d) => Number(d.trim())).filter((d) => Number.isInteger(d) && d > 0);
+}
+// Nova tentativa do toque que a Meta barrou pelo limite de marketing por usuário
+// (131049 — "healthy ecosystem engagement"). A Meta orienta não reenviar na hora:
+// a cadência tenta UMA vez, pelo menos CADENCE_WA_RETRY_AFTER_HOURS depois, à tarde
+// (depois dos envios novos da manhã) e só enquanto o próximo toque ainda não venceu —
+// assim a nova tentativa nunca sai depois do e-mail seguinte. Cota diária própria.
+const WA_RETRY_CODES = (Deno.env.get('CADENCE_WA_RETRY_CODES') || '131049')
+  .split(',').map((c) => Number(c.trim())).filter((c) => Number.isInteger(c) && c > 0);
+const WA_MAX_ATTEMPTS = Math.max(1, Number(Deno.env.get('CADENCE_WA_MAX_ATTEMPTS') || 2));
+const WA_RETRY_AFTER_MS = Math.max(1, Number(Deno.env.get('CADENCE_WA_RETRY_AFTER_HOURS') || 20)) * 3_600_000;
+const WA_RETRY_FROM_HOUR = Number(Deno.env.get('CADENCE_WA_RETRY_FROM_HOUR') || 14);
+const DAILY_WA_RETRY_MAX = Math.max(0, Number(Deno.env.get('CADENCE_WA_RETRY_MAX') ?? 30));
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -125,17 +150,52 @@ function isOpeningWindow(): boolean {
   return ignoreWindow() || brNow().getUTCHours() < OPENING_END_HOUR;
 }
 
+/** Nova tentativa de WhatsApp só à tarde (depois dos envios novos da manhã). */
+function isRetryWindow(): boolean {
+  return ignoreWindow() || brNow().getUTCHours() >= WA_RETRY_FROM_HOUR;
+}
+
+/** Início do dia de hoje em São Paulo, em ISO (UTC). */
+function brDayStartIso(): string {
+  const br = brNow();
+  return new Date(Date.UTC(br.getUTCFullYear(), br.getUTCMonth(), br.getUTCDate()) + 3 * 3_600_000).toISOString();
+}
+
 /** E-mails da cadência já enviados hoje (dia de São Paulo). */
 async function emailsSentToday(supabase: SupabaseClient): Promise<number> {
-  const br = brNow();
-  const startUtc = Date.UTC(br.getUTCFullYear(), br.getUTCMonth(), br.getUTCDate()) + 3 * 3_600_000;
   const { count } = await supabase
     .from('cadence_state')
     .select('id', { count: 'exact', head: true })
     .eq('channel', 'email')
     .eq('status', 'sent')
-    .gte('sent_at', new Date(startUtc).toISOString());
+    .gte('sent_at', brDayStartIso());
   return count ?? 0;
+}
+
+/** Toques de WhatsApp da cadência já enviados hoje (dia de São Paulo). */
+async function whatsappSentToday(supabase: SupabaseClient): Promise<number> {
+  const { count } = await supabase
+    .from('cadence_state')
+    .select('id', { count: 'exact', head: true })
+    .eq('channel', 'whatsapp')
+    .eq('status', 'sent')
+    .gte('sent_at', brDayStartIso());
+  return count ?? 0;
+}
+
+/** Novas tentativas de WhatsApp feitas hoje (não contam na cota de toques novos). */
+async function waRetriesToday(supabase: SupabaseClient): Promise<number> {
+  const { count } = await supabase
+    .from('cadence_state')
+    .select('id', { count: 'exact', head: true })
+    .gte('retried_at', brDayStartIso());
+  return count ?? 0;
+}
+
+/** Nova tentativa de um toque em espera (o worker ainda respeita janela e dias de envio). */
+const HOLD_RETRY_MS = 30 * 60_000;
+function holdRetryIso(): string {
+  return new Date(Date.now() + HOLD_RETRY_MS).toISOString();
 }
 
 /** Playbook 1.3: só e-mail "Verified" no Apollo (sem status = não veio do Apollo, passa). */
@@ -267,36 +327,241 @@ function buildWaParams(step: number, contact: Contact, vars: { nome: string; emp
   return spec.split(',').map((k) => k.trim()).filter(Boolean).map(resolve);
 }
 
+/** Template do step para a persona: CADENCE_WA_TEMPLATE_STEP{n}_{P1|P3}, senão o genérico do step. */
+function waTemplateFor(step: number, persona: CadencePersona | null): string {
+  const byPersona = persona ? (Deno.env.get(`CADENCE_WA_TEMPLATE_STEP${step}_${persona}`) || '').trim() : '';
+  return byPersona || (Deno.env.get(`CADENCE_WA_TEMPLATE_STEP${step}`) || '').trim();
+}
+
 /**
- * Toque de WhatsApp da cadência (D3/D9) via template Meta aprovado. Só envia se o
- * template do step estiver configurado por env (CADENCE_WA_TEMPLATE_STEP{n}) e o
- * contato tiver telefone; senão devolve {sent:false} e o worker pula o step.
- * Usa enqueueTemplateForContact (mesma fila do whatsapp-sender) — a função
- * whatsapp-template-send exige token de usuário e não serve para o cron.
+ * Status do template na Meta (APPROVED, PENDING, REJECTED…), com cache por passada.
+ * Enfileirar um template ainda em análise faria o envio falhar depois de o step
+ * já estar marcado como enviado — por isso o worker só envia o que está APPROVED.
  */
-async function trySendWhatsapp(supabase: SupabaseClient, contact: Contact, step: number): Promise<{ sent: boolean; reason: string }> {
-  const template = (Deno.env.get(`CADENCE_WA_TEMPLATE_STEP${step}`) || '').trim();
-  if (!template) return { sent: false, reason: 'whatsapp não configurado (template Meta pendente)' };
-  if (!contact.phone_number) return { sent: false, reason: 'sem telefone' };
+const templateStatusCache = new Map<string, string>();
+async function metaTemplateStatus(supabase: SupabaseClient, name: string, language: string): Promise<string> {
+  const key = `${name}:${language}`;
+  const cached = templateStatusCache.get(key);
+  if (cached) return cached;
+  let status = 'UNKNOWN';
+  try {
+    const { data: settings } = await supabase
+      .from('nina_settings')
+      .select('whatsapp_access_token, whatsapp_business_account_id')
+      .not('whatsapp_access_token', 'is', null)
+      .not('whatsapp_business_account_id', 'is', null)
+      .limit(1)
+      .maybeSingle();
+    if (settings) {
+      const url = `https://graph.facebook.com/v21.0/${settings.whatsapp_business_account_id}/message_templates`
+        + `?name=${encodeURIComponent(name)}&fields=name,status,language&limit=20`;
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${settings.whatsapp_access_token}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await resp.json().catch(() => ({}));
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      // deno-lint-ignore no-explicit-any
+      const match = rows.find((t: any) => t?.name === name && t?.language === language);
+      if (match?.status) status = String(match.status);
+      else if (resp.ok) status = 'NOT_FOUND';
+    }
+  } catch (e) {
+    console.error('[cadence] consulta de template falhou', e instanceof Error ? e.message : String(e));
+  }
+  templateStatusCache.set(key, status);
+  return status;
+}
+
+/**
+ * Celular do contato. Lead da Apollo cujo telefone chegou depois pelo webhook de
+ * revelação pode ter o número só em apollo_leads: copia para o contato aqui.
+ */
+async function ensureContactPhone(supabase: SupabaseClient, contact: Contact): Promise<string | null> {
+  if (contact.phone_number) return contact.phone_number;
+  const { data: lead } = await supabase
+    .from('apollo_leads')
+    .select('phone_number')
+    .eq('contact_id', contact.id)
+    .not('phone_number', 'is', null)
+    .limit(1)
+    .maybeSingle();
+  const phone = lead?.phone_number ?? null;
+  if (!phone) return null;
+  const { error } = await supabase.from('contacts').update({ phone_number: phone }).eq('id', contact.id);
+  if (error) {
+    console.error('[cadence] não foi possível gravar o telefone no contato', contact.id, error.message ?? error);
+    return null;
+  }
+  contact.phone_number = phone;
+  return phone;
+}
+
+/**
+ * Toque de WhatsApp da cadência (D3/D9) via template Meta aprovado, por persona.
+ * Sem template configurado ou ainda não aprovado: espera (hold) se o step está em
+ * CADENCE_WA_HOLD_STEPS, senão é pulado. Sem celular: pulado (o e-mail seguinte
+ * mantém o dia). Usa enqueueTemplateForContact (mesma fila do whatsapp-sender) —
+ * a função whatsapp-template-send exige token de usuário e não serve para o cron.
+ */
+async function trySendWhatsapp(
+  supabase: SupabaseClient,
+  contact: Contact,
+  step: number,
+): Promise<{ sent: boolean; hold: boolean; reason: string; messageId?: string }> {
+  const required = waHoldSteps().includes(step);
+  const template = waTemplateFor(step, personaOf(contact));
+  if (!template) return { sent: false, hold: required, reason: 'whatsapp não configurado (template Meta pendente)' };
+  const phone = await ensureContactPhone(supabase, contact);
+  if (!phone) return { sent: false, hold: false, reason: 'sem telefone' };
   const language = (Deno.env.get('CADENCE_WA_LANGUAGE') || 'pt_BR').trim();
+  const status = await metaTemplateStatus(supabase, template, language);
+  if (status !== 'APPROVED') {
+    return { sent: false, hold: required, reason: `template ${template} ainda não aprovado na Meta (${status})` };
+  }
   const vars = renderVars(contact);
   try {
-    await enqueueTemplateForContact(supabase, {
-      contact: { id: contact.id, name: contact.name ?? null, call_name: contact.call_name ?? null, phone_number: contact.phone_number },
+    const { messageId } = await enqueueTemplateWithMessage(supabase, {
+      contact: { id: contact.id, name: contact.name ?? null, call_name: contact.call_name ?? null, phone_number: phone },
       name: template,
       language,
-      bodyText: '',
+      bodyText: waTemplateBody(template),
       params: buildWaParams(step, contact, vars),
+      asAgent: true,
     });
     fetch(`${supabaseUrl}/functions/v1/whatsapp-sender`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ triggered_by: 'cadence-worker' }),
     }).catch(() => {});
-    return { sent: true, reason: '' };
+    return { sent: true, hold: false, reason: '', messageId };
   } catch (e) {
-    return { sent: false, reason: e instanceof Error ? e.message : String(e) };
+    return { sent: false, hold: required, reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Situação da mensagem de WhatsApp (status do webhook da Meta + código de erro, se falhou). */
+async function waDelivery(supabase: SupabaseClient, messageId: string): Promise<{ status: string; code: number | null }> {
+  const { data } = await supabase.from('messages').select('status, metadata').eq('id', messageId).maybeSingle();
+  const code = Number(record(record(data?.metadata).whatsapp_error).code);
+  return { status: String(data?.status ?? 'desconhecido'), code: Number.isFinite(code) ? code : null };
+}
+
+/**
+ * Playbook Passo 4: o WhatsApp 2 (D9) só sai se o WhatsApp 1 (D3) foi entregue.
+ * Devolve o motivo para pular o toque, ou null se pode enviar (sem toque de
+ * WhatsApp anterior na cadência não há o que conferir).
+ */
+async function previousWaUndelivered(supabase: SupabaseClient, contactId: string, step: number): Promise<string | null> {
+  const prev = CADENCE_STEPS.filter((s) => s.channel === 'whatsapp' && s.step < step).pop();
+  if (!prev) return null;
+  const { data: row } = await supabase
+    .from('cadence_state')
+    .select('status, message_id')
+    .eq('contact_id', contactId)
+    .eq('step', prev.step)
+    .maybeSingle();
+  if (!row || row.status !== 'sent' || !row.message_id) {
+    return `WhatsApp anterior (step ${prev.step}) não foi enviado`;
+  }
+  const delivery = await waDelivery(supabase, row.message_id);
+  if (delivery.status === 'delivered' || delivery.status === 'read') return null;
+  return `WhatsApp anterior (step ${prev.step}) não foi entregue (${delivery.status}${delivery.code ? ` ${delivery.code}` : ''})`;
+}
+
+/**
+ * Uma nova tentativa para o toque de WhatsApp que a Meta barrou por limite de
+ * marketing (ver WA_RETRY_CODES). Regras: no máximo WA_MAX_ATTEMPTS envios por toque,
+ * pelo menos WA_RETRY_AFTER_MS depois do último, e só enquanto o próximo toque da
+ * cadência ainda não venceu nem saiu. dryRun lista os candidatos sem enviar.
+ */
+async function runWaRetries(
+  supabase: SupabaseClient,
+  perPass: number,
+  dryRun = false,
+): Promise<Record<string, unknown>> {
+  if (WA_RETRY_CODES.length === 0 || DAILY_WA_RETRY_MAX === 0) return { waRetried: 0 };
+  let budget = Math.min(perPass, DAILY_WA_RETRY_MAX - await waRetriesToday(supabase));
+  if (budget <= 0 && !dryRun) return { waRetried: 0 };
+
+  const nowMs = Date.now();
+  // Só toques cuja mensagem falhou (o join filtra no banco; entregues nem voltam).
+  const { data: rows } = await supabase
+    .from('cadence_state')
+    .select('id, contact_id, step, attempts, message_id, sent_at, retried_at, messages!inner(status, metadata)')
+    .eq('channel', 'whatsapp')
+    .eq('status', 'sent')
+    .eq('messages.status', 'failed')
+    .lt('attempts', WA_MAX_ATTEMPTS)
+    .lte('sent_at', new Date(nowMs - WA_RETRY_AFTER_MS).toISOString())
+    .order('sent_at')
+    .limit(100);
+
+  // Encerra as tentativas do toque (não volta a ser avaliado nas próximas passadas).
+  const giveUp = async (id: string, reason: string) => {
+    if (!dryRun) await supabase.from('cadence_state').update({ attempts: WA_MAX_ATTEMPTS, last_error: reason }).eq('id', id);
+  };
+
+  let waRetried = 0;
+  const candidates: Array<Record<string, unknown>> = [];
+  for (const row of (rows ?? [])) {
+    if (!dryRun && budget <= 0) break;
+    const last = Date.parse(row.retried_at ?? row.sent_at);
+    if (nowMs - last < WA_RETRY_AFTER_MS) continue;
+
+    const code = Number(record(record(record(row.messages).metadata).whatsapp_error).code);
+    // Sem código = falha anterior à captura do erro no webhook (27/10): conta como
+    // retentável. Código conhecido fora da lista (ex.: número sem WhatsApp) encerra.
+    const delivery = { code: Number.isFinite(code) && code > 0 ? code : null };
+    if (delivery.code && !WA_RETRY_CODES.includes(delivery.code)) {
+      await giveUp(row.id, `WhatsApp não entregue (${delivery.code}) — sem nova tentativa`);
+      continue;
+    }
+
+    // O próximo toque já saiu ou já venceu: a nova tentativa chegaria fora de ordem.
+    const { data: later } = await supabase
+      .from('cadence_state')
+      .select('id, status, scheduled_at')
+      .eq('contact_id', row.contact_id)
+      .gt('step', row.step)
+      .in('status', ['sent', 'sending', 'pending']);
+    const overtaken = (later ?? []).some((l: { status: string; scheduled_at: string }) =>
+      l.status !== 'pending' || Date.parse(l.scheduled_at) <= nowMs);
+    if (overtaken) {
+      await giveUp(row.id, `WhatsApp barrado pela Meta (${delivery.code ?? 'sem código'}) — próximo toque já venceu, sem nova tentativa`);
+      continue;
+    }
+
+    const { data: contact } = await supabase
+      .from('contacts')
+      .select('id, email, name, call_name, phone_number, tags, client_memory')
+      .eq('id', row.contact_id)
+      .maybeSingle();
+    if (!contact || isSuppressed(contact) || hasReplied(contact)) {
+      await giveUp(row.id, 'sem nova tentativa: contato suprimido, removido ou já respondeu');
+      continue;
+    }
+
+    if (dryRun) {
+      candidates.push({ contactId: row.contact_id, name: contact.name, step: row.step, code: delivery.code, sentAt: row.sent_at });
+      continue;
+    }
+
+    const wa = await trySendWhatsapp(supabase, contact, row.step);
+    if (wa.sent) {
+      await supabase.from('cadence_state').update({
+        message_id: wa.messageId ?? row.message_id,
+        attempts: (row.attempts || 1) + 1,
+        retried_at: new Date().toISOString(),
+        last_error: `nova tentativa após falha ${delivery.code ?? 'sem código'} na Meta`,
+      }).eq('id', row.id);
+      waRetried += 1;
+      budget -= 1;
+    } else if (!wa.hold) {
+      await giveUp(row.id, `sem nova tentativa: ${wa.reason}`);
+    }
+  }
+  return dryRun ? { candidates } : { waRetried };
 }
 
 /** Domínio da empresa do contato (chave de agrupamento): domínio do e-mail ou o da Apollo. */
@@ -466,9 +731,11 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
   if (!withinWindow()) return { skipped: 'fora da janela útil (9-17h, dia útil)', ...reminders };
   if (!isSendDay()) return { skipped: 'fora dos dias de envio do piloto (terça a quinta)', ...reminders };
   let sentToday = await emailsSentToday(supabase);
-  if (sentToday >= DAILY_EMAIL_MAX) {
-    return { skipped: `limite diário de e-mails atingido (${sentToday}/${DAILY_EMAIL_MAX})`, ...reminders };
+  let waToday = await whatsappSentToday(supabase);
+  if (sentToday >= DAILY_EMAIL_MAX && waToday >= DAILY_WA_MAX && !isRetryWindow()) {
+    return { skipped: `limites diários atingidos (e-mail ${sentToday}/${DAILY_EMAIL_MAX}, WhatsApp ${waToday}/${DAILY_WA_MAX})`, ...reminders };
   }
+  templateStatusCache.clear(); // status de aprovação na Meta é relido a cada passada
 
   // 3) Auto-matrícula de novos qualificados.
   const enrolled = await autoEnroll(supabase, ENROLL_PER_RUN);
@@ -483,11 +750,13 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     .order('scheduled_at')
     .limit(BATCH);
 
-  let sent = 0, skipped = 0, errors = 0, rateLimited = false;
+  let sent = 0, skipped = 0, held = 0, errors = 0, rateLimited = false, waThisPass = 0;
   for (const item of (due ?? [])) {
     if (item.channel === 'email') {
-      if (sentToday >= DAILY_EMAIL_MAX) break; // cota do dia cheia: o resto fica para amanhã
+      if (sentToday >= DAILY_EMAIL_MAX) continue; // cota do dia cheia: o resto fica para amanhã
       if (item.step === OPENING_STEP && !isOpeningWindow()) continue; // abertura só de manhã
+    } else if (waToday >= DAILY_WA_MAX || waThisPass >= WA_PER_PASS) {
+      continue; // cota de WhatsApp (do dia ou da passada) cheia
     }
 
     // Guarda de ordem: não envia um step com anterior ainda pendente/em envio.
@@ -525,11 +794,29 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
 
     // Toque de WhatsApp (D3/D9): envia via template Meta se configurado; senão pula.
     if (item.channel !== 'email') {
+      const undelivered = await previousWaUndelivered(supabase, contact.id, item.step);
+      if (undelivered) {
+        await markStep(supabase, item.id, 'skipped', undelivered);
+        skipped += 1;
+        continue;
+      }
       const wa = await trySendWhatsapp(supabase, contact, item.step);
       if (wa.sent) {
-        await supabase.from('cadence_state').update({ status: 'sent', sent_at: new Date().toISOString(), last_error: null }).eq('id', item.id);
+        await supabase.from('cadence_state').update({
+          status: 'sent', sent_at: new Date().toISOString(), last_error: null,
+          message_id: wa.messageId ?? null, attempts: 1,
+        }).eq('id', item.id);
         sent += 1;
+        waToday += 1;
+        waThisPass += 1;
         await anchorNext(supabase, contact.id, item.step);
+      } else if (wa.hold) {
+        // Toque obrigatório ainda sem template aprovado: volta para a fila e tenta
+        // de novo em 30 min. Os steps seguintes esperam (guarda de ordem).
+        await supabase.from('cadence_state')
+          .update({ status: 'pending', scheduled_at: holdRetryIso(), last_error: wa.reason })
+          .eq('id', item.id);
+        held += 1;
       } else {
         // Toque pulado não reancora: o e-mail seguinte mantém o dia do playbook
         // (sem isso o D6 virava D9 sempre que o WhatsApp estava desligado).
@@ -579,7 +866,10 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     await anchorNext(supabase, contact.id, item.step);
   }
 
-  return { enrolled, sent, skipped, errors, rateLimited, ...reminders };
+  // 5) Nova tentativa dos WhatsApps barrados pela Meta (à tarde, cota própria).
+  const waRetry = isRetryWindow() ? await runWaRetries(supabase, WA_PER_PASS) : {};
+
+  return { enrolled, sent, skipped, held, errors, rateLimited, ...waRetry, ...reminders };
 }
 
 serve(async (req) => {
@@ -604,6 +894,27 @@ serve(async (req) => {
       const limit = Math.min(Math.max(Number(body.limit) || ENROLL_PER_RUN, 1), 200);
       const enrolled = await autoEnroll(supabase, limit);
       return json({ ok: true, enrolled });
+    }
+
+    // Playbook 7.2: testar o toque com um contato interno antes do lote. Envia o
+    // template do step para UM contato (persona informada se ele não tiver uma),
+    // sem janela, sem cota e sem mexer em cadence_state.
+    if (action === 'test_whatsapp') {
+      if (typeof body.contactId !== 'string' || !body.contactId) return json({ error: 'contactId obrigatório' }, 400);
+      const step = Number(body.step) || 2;
+      const { data: contact } = await supabase
+        .from('contacts').select('id, email, name, call_name, phone_number, tags, client_memory').eq('id', body.contactId).maybeSingle();
+      if (!contact) return json({ error: 'Contato não encontrado' }, 404);
+      if (!personaOf(contact) && (body.persona === 'P1' || body.persona === 'P3')) {
+        const mem = record(contact.client_memory);
+        contact.client_memory = { ...mem, apollo: { ...record(mem.apollo), persona: body.persona } };
+      }
+      return json({ ok: true, ...(await trySendWhatsapp(supabase, contact, step)) });
+    }
+
+    // Quem receberia a nova tentativa de WhatsApp agora (sem enviar nada).
+    if (action === 'wa_retry_preview') {
+      return json({ ok: true, ...(await runWaRetries(supabase, 0, true)) });
     }
 
     if (action !== 'run') return json({ error: 'Ação desconhecida' }, 400);

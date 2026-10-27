@@ -80,6 +80,36 @@ const TEMPLATES: Record<CadencePersona, Record<number, EmailTemplate>> = {
   },
 };
 
+// Toques de WhatsApp (playbook 5.1/5.2) como templates Meta MARKETING em pt_BR:
+// {{1}} = primeiro nome, {{2}} = empresa. O texto aqui é cópia fiel do que foi
+// submetido à Meta — serve para gravar no histórico o que o lead recebeu (a Lis
+// lê esse histórico quando ele responde). Nome do template no env
+// CADENCE_WA_TEMPLATE_STEP{n}_{persona}.
+export interface WaTemplateDef { name: string; body: string }
+
+export const WA_TEMPLATES: Record<CadencePersona, Record<number, WaTemplateDef>> = {
+  P1: {
+    2: {
+      name: 'lis_d3_p1_v1',
+      body: 'Oi {{1}}, aqui é a Lis, da Trajetória Consultoria. Te escrevi por e-mail com uma pergunta: se você ficasse 30 dias sem aparecer na {{2}}, o que pararia primeiro? Pode responder por aqui, se preferir. Se não quiser receber mensagens, é só me dizer.',
+    },
+  },
+  P3: {
+    2: {
+      name: 'lis_d3_p3_v1',
+      body: 'Oi {{1}}, aqui é a Lis, da Trajetória Consultoria. Te escrevi por e-mail com uma pergunta: no último fechamento, em que dia útil a diretoria passou a confiar nos números da {{2}}: dia 3, dia 10 ou depois? Pode responder por aqui, se preferir. Se não quiser receber mensagens, é só me dizer.',
+    },
+  },
+};
+
+/** Texto do template de WhatsApp pelo nome (para o histórico), ou '' se desconhecido. */
+export function waTemplateBody(name: string): string {
+  for (const steps of Object.values(WA_TEMPLATES)) {
+    for (const def of Object.values(steps)) if (def.name === name) return def.body;
+  }
+  return '';
+}
+
 function render(text: string, vars: { nome: string; empresa: string }): string {
   return text.replaceAll('{nome}', vars.nome).replaceAll('{empresa}', vars.empresa);
 }

@@ -36,6 +36,12 @@ export interface EnqueueTemplateInput {
   bodyText: string;
   /** Tokens brutos — resolvidos por contato aqui dentro. */
   params: string[];
+  /**
+   * Toque automático da cadência: usa (ou cria) a conversa de WhatsApp do contato
+   * com a Lis no comando ('nina'), para que a resposta do lead seja tratada por ela
+   * — e não a conversa mais recente, que para lead da Apollo é a de e-mail.
+   */
+  asAgent?: boolean;
 }
 
 /**
@@ -44,14 +50,26 @@ export interface EnqueueTemplateInput {
  */
 // deno-lint-ignore no-explicit-any
 export async function enqueueTemplateForContact(service: any, input: EnqueueTemplateInput): Promise<string> {
+  return (await enqueueTemplateWithMessage(service, input)).rendered;
+}
+
+/**
+ * Igual a enqueueTemplateForContact, mas devolve também o id da mensagem gravada —
+ * a cadência usa para acompanhar se o toque foi entregue (status vem do webhook).
+ */
+// deno-lint-ignore no-explicit-any
+export async function enqueueTemplateWithMessage(service: any, input: EnqueueTemplateInput): Promise<{ rendered: string; messageId: string }> {
   const { contact, name, language, bodyText } = input;
   const bodyParams = input.params.map((token) => resolveParam(token, contact));
   const rendered = bodyText ? renderTemplateText(bodyText, bodyParams) : `[template] ${name}`;
 
-  const { data: existing, error: conversationError } = await service
+  const fromType = input.asAgent ? 'nina' : 'human';
+  let lookup = service
     .from('conversations')
     .select('id')
-    .eq('contact_id', contact.id)
+    .eq('contact_id', contact.id);
+  if (input.asAgent) lookup = lookup.eq('channel', 'whatsapp').eq('is_active', true);
+  const { data: existing, error: conversationError } = await lookup
     .order('last_message_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -61,7 +79,9 @@ export async function enqueueTemplateForContact(service: any, input: EnqueueTemp
   if (!conversationId) {
     const { data: created, error: createError } = await service
       .from('conversations')
-      .insert({ contact_id: contact.id, status: 'human' })
+      .insert(input.asAgent
+        ? { contact_id: contact.id, channel: 'whatsapp', status: 'nina', is_active: true }
+        : { contact_id: contact.id, status: 'human' })
       .select('id')
       .single();
     if (createError) throw createError;
@@ -74,7 +94,7 @@ export async function enqueueTemplateForContact(service: any, input: EnqueueTemp
       conversation_id: conversationId,
       content: rendered,
       type: 'text',
-      from_type: 'human',
+      from_type: fromType,
       status: 'processing',
       sent_at: new Date().toISOString(),
     })
@@ -86,7 +106,7 @@ export async function enqueueTemplateForContact(service: any, input: EnqueueTemp
     conversation_id: conversationId,
     contact_id: contact.id,
     content: rendered,
-    from_type: 'human',
+    from_type: fromType,
     message_type: 'template',
     priority: 2,
     message_id: (messageRow as { id: string }).id,
@@ -94,5 +114,5 @@ export async function enqueueTemplateForContact(service: any, input: EnqueueTemp
   });
   if (queueError) throw queueError;
 
-  return rendered;
+  return { rendered, messageId: (messageRow as { id: string }).id };
 }

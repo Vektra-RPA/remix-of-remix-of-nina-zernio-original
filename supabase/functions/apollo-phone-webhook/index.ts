@@ -3,9 +3,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { extractPhone } from '../_shared/apollo.ts';
 
 /**
- * Recebe da Apollo o telefone revelado de forma assíncrona e atualiza o lead.
- * O disparo em si acontece na próxima execução do apollo-lead-sync, que pega
- * todo lead com telefone e ainda sem campanha.
+ * Recebe da Apollo o telefone revelado de forma assíncrona e atualiza o lead e o
+ * contato do CRM. O toque de WhatsApp sai pela cadência (D3), depois do e-mail 1.
  */
 
 const corsHeaders = {
@@ -44,12 +43,26 @@ serve(async (request) => {
       if (!apolloId) continue;
       const phone = extractPhone(person);
       if (!phone) continue;
-      const { error } = await service
+      const { data: leads, error } = await service
         .from('apollo_leads')
         .update({ phone_number: phone, status: 'new' })
         .eq('apollo_person_id', apolloId)
-        .is('phone_number', null);
-      if (!error) updated += 1;
+        .is('phone_number', null)
+        .select('contact_id');
+      if (error) continue;
+      updated += 1;
+
+      // Leva o celular também para o contato do CRM (é dele que a cadência e o
+      // webhook do WhatsApp leem). Sem isso o número ficava só em apollo_leads.
+      for (const lead of (leads ?? []) as Array<{ contact_id: string | null }>) {
+        if (!lead.contact_id) continue;
+        const { error: contactError } = await service
+          .from('contacts')
+          .update({ phone_number: phone })
+          .eq('id', lead.contact_id)
+          .is('phone_number', null);
+        if (contactError) console.error('apollo-phone-webhook: telefone no contato falhou:', contactError.message);
+      }
     }
 
     return json(200, { success: true, updated });

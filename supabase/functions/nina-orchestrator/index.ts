@@ -1371,11 +1371,14 @@ async function processQueueItem(
     return;
   }
 
-  // Get recent messages for context (last 20)
+  // Get recent messages for context (last 20). Mensagem que falhou (ex.: WhatsApp
+  // barrado pela Meta) fica fora: o lead nunca a recebeu, e a Lis só cita toque que
+  // existe de fato (playbook, Passo 4).
   const { data: recentMessages } = await supabase
     .from('messages')
     .select('*')
     .eq('conversation_id', conversation.id)
+    .or('status.is.null,status.neq.failed')
     .order('sent_at', { ascending: false })
     .limit(20);
 

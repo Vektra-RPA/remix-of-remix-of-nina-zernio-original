@@ -37,6 +37,22 @@ async function pauseColdCadence(supabase: any, contact: any): Promise<void> {
   }
 }
 
+/**
+ * Celular brasileiro chega da Meta às vezes sem o 9 extra (wa_id de 12 dígitos,
+ * ex.: 554199998888) enquanto o contato da Apollo foi gravado com 13 dígitos
+ * (5541999998888) — e vice-versa. Devolve o número e a variante para a busca.
+ */
+function brPhoneVariants(phone: string): string[] {
+  const digits = String(phone || '').replace(/\D/g, '');
+  const variants = [phone];
+  if (digits.startsWith('55') && digits.length === 12) {
+    variants.push(`${digits.slice(0, 4)}9${digits.slice(4)}`);
+  } else if (digits.startsWith('55') && digits.length === 13 && digits[4] === '9') {
+    variants.push(`${digits.slice(0, 4)}${digits.slice(5)}`);
+  }
+  return Array.from(new Set(variants));
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -160,12 +176,33 @@ serve(async (req) => {
             
             const newStatus = statusMap[status.status];
             if (newStatus) {
+              // Falha: guarda o motivo da Meta (ex.: 131026 número sem WhatsApp,
+              // 131049 limite de marketing por usuário) para o time e a cadência.
+              let failure: Record<string, unknown> = {};
+              if (newStatus === 'failed' && Array.isArray(status.errors) && status.errors.length) {
+                const { data: current } = await supabase
+                  .from('messages').select('metadata').eq('whatsapp_message_id', status.id).maybeSingle();
+                const meta = current?.metadata && typeof current.metadata === 'object' ? current.metadata : {};
+                const err = status.errors[0] || {};
+                failure = {
+                  metadata: {
+                    ...meta,
+                    whatsapp_error: {
+                      code: err.code ?? null,
+                      title: err.title ?? null,
+                      details: err.error_data?.details ?? err.message ?? null,
+                      at: new Date().toISOString(),
+                    },
+                  },
+                };
+              }
               await supabase
                 .from('messages')
-                .update({ 
+                .update({
                   status: newStatus,
                   ...(newStatus === 'delivered' && { delivered_at: new Date().toISOString() }),
-                  ...(newStatus === 'read' && { read_at: new Date().toISOString() })
+                  ...(newStatus === 'read' && { read_at: new Date().toISOString() }),
+                  ...failure,
                 })
                 .eq('whatsapp_message_id', status.id);
             }
@@ -194,6 +231,22 @@ serve(async (req) => {
             .select('*')
             .eq('phone_number', phoneNumber)
             .maybeSingle();
+
+          // Lead da cadência com o celular gravado no outro formato (com/sem o 9).
+          if (!contact) {
+            const { data: byVariant } = await supabase
+              .from('contacts')
+              .select('*')
+              .in('phone_number', brPhoneVariants(phoneNumber))
+              .limit(1)
+              .maybeSingle();
+            if (byVariant) {
+              contact = byVariant;
+              if (!byVariant.whatsapp_id) {
+                await supabase.from('contacts').update({ whatsapp_id: whatsappId }).eq('id', byVariant.id);
+              }
+            }
+          }
 
           if (!contact) {
             const { data: newContact, error: contactError } = await supabase
@@ -230,11 +283,17 @@ serve(async (req) => {
           }
 
           // 2. Get or create conversation IMMEDIATELY
+          // Só a conversa de WhatsApp: o lead da Apollo também tem uma conversa de
+          // e-mail ativa, e a resposta por aqui não pode cair nela (a Lis
+          // responderia por e-mail).
           let { data: conversation } = await supabase
             .from('conversations')
             .select('*')
             .eq('contact_id', contact.id)
             .eq('is_active', true)
+            .eq('channel', 'whatsapp')
+            .order('last_message_at', { ascending: false })
+            .limit(1)
             .maybeSingle();
 
           if (!conversation) {
@@ -242,6 +301,7 @@ serve(async (req) => {
               .from('conversations')
               .insert({
                 contact_id: contact.id,
+                channel: 'whatsapp',
                 status: 'nina',
                 is_active: true,
                 user_id: null

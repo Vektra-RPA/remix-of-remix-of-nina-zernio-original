@@ -144,11 +144,20 @@ async function deleteEvent(token: string, calendarId: string, eventId: string): 
   }
 }
 
-function extraAttendees(): string[] {
-  return (Deno.env.get('MEETING_EXTRA_ATTENDEES') || '')
+function emailList(envName: string): string[] {
+  return (Deno.env.get(envName) || '')
     .split(',')
-    .map((e) => e.trim())
+    .map((e) => e.trim().toLowerCase())
     .filter((e) => e.includes('@'));
+}
+
+function extraAttendees(): string[] {
+  return emailList('MEETING_EXTRA_ATTENDEES');
+}
+
+/** Convidados opcionais (ex.: Patrícia na reunião de venda) — não bloqueiam o horário. */
+function optionalAttendees(): string[] {
+  return emailList('MEETING_OPTIONAL_ATTENDEES');
 }
 
 serve(async (req) => {
@@ -243,10 +252,16 @@ serve(async (req) => {
 
     const contact = (appt.contact && typeof appt.contact === 'object') ? appt.contact : {};
     const leadEmail = typeof contact.email === 'string' && contact.email.includes('@') ? contact.email.trim() : null;
-    const attendees = Array.from(new Set([
-      ...(leadEmail ? [leadEmail] : []),
+    const required = Array.from(new Set([
+      ...(leadEmail ? [leadEmail.toLowerCase()] : []),
       ...extraAttendees(),
-    ])).map((email) => ({ email }));
+    ]));
+    const attendees = [
+      ...required.map((email) => ({ email })),
+      ...optionalAttendees()
+        .filter((email) => !required.includes(email) && email !== organizer.toLowerCase())
+        .map((email) => ({ email, optional: true })),
+    ];
 
     const event = {
       summary: appt.title || 'Reunião de venda — Trajetória',
