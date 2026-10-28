@@ -21,17 +21,22 @@ export function getActionPolicy(config: unknown, actionId: GovernedActionId): Un
 }
 
 /** A autorização precisa ser uma fala real do lead presente no histórico. Um
- * booleano gerado pelo modelo não é evidência suficiente. */
+ * booleano gerado pelo modelo não é evidência suficiente. A evidência pode juntar
+ * mais de uma mensagem ("Parar / Não trabalho mais lá"): cada trecho precisa
+ * estar numa fala recente do lead. */
 export function hasExplicitConfirmation(
   history: Array<{ role: string; content: string }>,
   evidence: unknown,
 ): boolean {
-  const normalizedEvidence = normalize(evidence);
-  if (normalizedEvidence.length < 4) return false;
-  return history
+  const recent = history
     .filter((message) => message.role === 'user')
     .slice(-6)
-    .some((message) => normalize(message.content).includes(normalizedEvidence));
+    .map((message) => normalize(message.content));
+  const parts = typeof evidence === 'string'
+    ? evidence.split(/\n|\s\/\s|["“”]/).map(normalize).filter((part) => part.length >= 4)
+    : [];
+  if (parts.length === 0) return false;
+  return parts.every((part) => recent.some((content) => content.includes(part)));
 }
 
 export interface ScheduleValidationResult {

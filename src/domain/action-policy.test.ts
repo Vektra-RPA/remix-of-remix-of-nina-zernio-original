@@ -35,6 +35,17 @@ describe('action policy guards', () => {
     expect(hasExplicitConfirmation(history, 'sim')).toBe(false);
   });
 
+  it('aceita evidência que junta mais de uma fala do lead, mas não trecho inventado', () => {
+    const history = [
+      { role: 'assistant', content: 'Posso continuar conversando com você por aqui?' },
+      { role: 'user', content: 'Parar' },
+      { role: 'user', content: 'Não trabalho mais na Fluid System' },
+    ];
+    expect(hasExplicitConfirmation(history, 'Parar\nNão trabalho mais na Fluid System')).toBe(true);
+    expect(hasExplicitConfirmation(history, '"Parar / Não trabalho mais na Fluid System"')).toBe(true);
+    expect(hasExplicitConfirmation(history, 'Parar / pode me remover da lista')).toBe(false);
+  });
+
   it('rejeita passado, fim de semana e horário fora da política', () => {
     const now = new Date('2026-08-03T12:00:00Z'); // segunda, 09h em São Paulo
     expect(validateScheduleRequest({ date: '2026-08-03', time: '10:00' }, appointmentPolicy, now).code).toBe('minimum_notice');
