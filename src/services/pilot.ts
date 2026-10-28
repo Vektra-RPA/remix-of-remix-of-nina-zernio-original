@@ -12,7 +12,7 @@ const record = (value: unknown): Record<string, unknown> =>
 export interface PilotFunnel {
   captados: number;      // contatos na base
   emCadencia: number;    // contatos com toque agendado
-  abordados: number;     // conversas iniciadas (a Lis já falou)
+  abordados: number;     // pessoas com algum toque enviado (não conversas)
   responderam: number;   // contatos com resposta registrada
   reunioes: number;      // agendamentos criados
   escaladas: number;     // conversas em atendimento humano
@@ -132,6 +132,11 @@ export interface PilotLoteRow {
   qualificada: boolean;
   lossReason: string | null;
   lossReasonSuggested: string | null;
+  optOut: boolean;
+  optOutReason: string | null;
+  bounced: boolean;
+  respondeuEm: string | null;
+  canalResposta: string | null;
 }
 
 export interface PilotIndicator {
@@ -145,6 +150,25 @@ export interface PilotIndicator {
 export interface PilotLote {
   rows: PilotLoteRow[];
   indicators: PilotIndicator[];
+}
+
+export interface PilotCampaignReply {
+  at: string;
+  canal: 'E-mail' | 'WhatsApp';
+}
+
+export interface PilotOutsideContact {
+  contactId: string;
+  nome: string;
+  detalhe: string;
+  respondeu: boolean;
+}
+
+export interface PilotCampaign {
+  lote: PilotLote;
+  conversationOf: Record<string, string>;
+  replies: PilotCampaignReply[];
+  foraDoLote: PilotOutsideContact[];
 }
 
 const chunk = <T,>(items: T[], size: number): T[][] => {
@@ -281,6 +305,11 @@ export const pilotApi = {
         qualificada,
         lossReason: outcome?.loss_reason ?? null,
         lossReasonSuggested,
+        optOut,
+        optOutReason: typeof memory.opt_out_reason === 'string' && memory.opt_out_reason.trim() ? memory.opt_out_reason.trim() : null,
+        bounced: Boolean(bouncedAt),
+        respondeuEm: typeof memory.replied_at === 'string' ? memory.replied_at : null,
+        canalResposta: typeof memory.last_reply_channel === 'string' ? memory.last_reply_channel : null,
       };
     }).sort((a, b) => a.empresa.localeCompare(b.empresa, 'pt-BR'));
 
@@ -310,6 +339,73 @@ export const pilotApi = {
     return { rows, indicators };
   },
 
+  // Dashboard da campanha: o lote + a conversa de cada lead (para abrir no chat),
+  // as respostas dos leads nos últimos 30 dias e quem está fora do lote (testes
+  // internos e contatos diretos), que não entra nos números.
+  fetchCampaign: async (): Promise<PilotCampaign> => {
+    const lote = await pilotApi.fetchLote();
+    const loteIds = new Set(lote.rows.map((r) => r.contactId));
+
+    const { data: allContacts, error: contactsError } = await supabase
+      .from('contacts')
+      .select('id, name, call_name, email, phone_number, tags')
+      .limit(5000);
+    if (contactsError) throw contactsError;
+    const outside = (allContacts ?? []).filter((c) => !loteIds.has(c.id));
+
+    const conversations: any[] = [];
+    for (const part of chunk([...loteIds, ...outside.map((c) => c.id)], 100)) {
+      const { data, error } = await supabase
+        .from('conversations')
+        .select('id, contact_id, channel, last_message_at')
+        .in('contact_id', part);
+      if (error) throw error;
+      conversations.push(...(data ?? []));
+    }
+    // Conversa mais recente de cada contato é a que o chat abre.
+    const conversationOf: Record<string, string> = {};
+    const lastAt: Record<string, string> = {};
+    for (const c of conversations) {
+      const at = c.last_message_at ?? '';
+      if (!conversationOf[c.contact_id] || at > lastAt[c.contact_id]) {
+        conversationOf[c.contact_id] = c.id;
+        lastAt[c.contact_id] = at;
+      }
+    }
+
+    const since = new Date(Date.now() - 31 * 86_400_000).toISOString();
+    const loteConversations = conversations.filter((c) => loteIds.has(c.contact_id));
+    const channelOf = new Map<string, string>(loteConversations.map((c) => [c.id, c.channel]));
+    const replies: PilotCampaignReply[] = [];
+    for (const part of chunk(loteConversations.map((c) => c.id), 100)) {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('created_at, conversation_id')
+        .eq('from_type', 'user')
+        .gte('created_at', since)
+        .in('conversation_id', part)
+        .limit(5000);
+      if (error) throw error;
+      for (const m of data ?? []) {
+        replies.push({ at: m.created_at, canal: channelOf.get(m.conversation_id) === 'email' ? 'E-mail' : 'WhatsApp' });
+      }
+    }
+
+    return {
+      lote,
+      conversationOf,
+      replies,
+      foraDoLote: outside.map((c) => ({
+        contactId: c.id,
+        nome: nomeOf(c),
+        detalhe: typeof c.email === 'string' && c.email.endsWith('@trajetoriaconsultoria.com.br')
+          ? 'Teste interno (e-mail da Trajetória)'
+          : (Array.isArray(c.tags) && c.tags.includes('apollo') ? 'Lead do Apollo sem cadência' : 'Teste interno ou contato direto, sem cadência'),
+        respondeu: Array.isArray(c.tags) && c.tags.includes('replied'),
+      })).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')),
+    };
+  },
+
   saveOutcome: async (contactId: string, patch: { reply_type?: ReplyType | null; loss_reason?: string | null }): Promise<void> => {
     const { error } = await supabase
       .from('lead_outcomes')
@@ -319,28 +415,32 @@ export const pilotApi = {
 
   fetchOverview: async (): Promise<PilotOverview> => {
     // Contagens do funil — baratas (head:true).
-    const [captados, reunioes, abordados, escaladasCount, responderam] = await Promise.all([
+    const [captados, reunioes, escaladasCount, responderam] = await Promise.all([
       supabase.from('contacts').select('id', { count: 'exact', head: true }),
       supabase.from('appointments').select('id', { count: 'exact', head: true }),
-      supabase.from('conversations').select('id', { count: 'exact', head: true }),
       supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'human'),
       supabase.from('contacts').select('id', { count: 'exact', head: true }).contains('tags', ['replied']),
     ]);
 
-    // Em cadência: contatos distintos com step pendente/em envio. Tolerante à
-    // tabela ainda não existir (pré-migração) — vira 0 e cadenceAvailable=false.
+    // Em cadência: contatos distintos com step pendente/em envio. Abordados:
+    // contatos distintos com algum toque enviado (pessoas, não conversas — cada
+    // lead tem uma conversa por canal). Tolerante à tabela ainda não existir
+    // (pré-migração) — vira 0 e cadenceAvailable=false.
     let emCadencia = 0;
+    let abordados = 0;
     let cadenceAvailable = true;
     {
       const { data, error } = await supabase
         .from('cadence_state')
-        .select('contact_id')
-        .in('status', ['pending', 'sending'])
+        .select('contact_id, status')
+        .in('status', ['pending', 'sending', 'sent'])
         .limit(5000);
       if (error) {
         cadenceAvailable = false;
       } else {
-        emCadencia = new Set((data ?? []).map((r: { contact_id: string }) => r.contact_id)).size;
+        const rows = (data ?? []) as Array<{ contact_id: string; status: string }>;
+        emCadencia = new Set(rows.filter((r) => r.status !== 'sent').map((r) => r.contact_id)).size;
+        abordados = new Set(rows.filter((r) => r.status === 'sent').map((r) => r.contact_id)).size;
       }
     }
 
@@ -404,7 +504,7 @@ export const pilotApi = {
       funnel: {
         captados: captados.count ?? 0,
         emCadencia,
-        abordados: abordados.count ?? 0,
+        abordados,
         responderam: responderam.count ?? 0,
         reunioes: reunioes.count ?? 0,
         escaladas: escaladasCount.count ?? 0,

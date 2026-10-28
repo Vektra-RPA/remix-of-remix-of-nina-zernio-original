@@ -1,15 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  RefreshCw, Loader2, Users, Send, MessageSquare, CalendarCheck, Megaphone, LifeBuoy, AlertTriangle,
+  RefreshCw, Loader2, Users, Send, MessageSquare, CalendarCheck, Megaphone, LifeBuoy, AlertTriangle, ChevronRight, LogOut, Search,
 } from 'lucide-react';
 import { Button } from '@/components/Button';
 import { Badge } from '@/components/ui/badge';
+import { LeadListSheet, type LeadDrill } from '@/components/LeadListSheet';
 import { toast } from 'sonner';
 import {
   pilotApi, LOSS_REASONS, REPLY_TYPE_LABEL,
-  type PilotLote, type PilotOverview, type PilotTouch, type ReplyType,
+  type PilotCampaign, type PilotLoteRow, type PilotOverview, type PilotTouch, type ReplyType,
 } from '@/services/pilot';
+import {
+  SITUACAO_LABEL, SITUACAO_ORDER, buildFunnel, groupBySituacao, toViews, type LeadView, type Situacao,
+} from '@/domain/campaign-dashboard';
 
 const fmtDate = (iso: string | null): string =>
   iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
@@ -34,17 +38,35 @@ const touchTitle = (t: PilotTouch): string =>
 
 const selectClass = 'w-full min-w-[9rem] rounded-lg border border-border bg-background p-1.5 text-xs';
 
+// As duas classificações só fazem sentido quando há o que classificar: tipo de
+// resposta depois que o lead responde (ou sai); motivo de perda quando o lead
+// saiu, a cadência acabou sem reunião ou a conversa esfriou. Valor já marcado
+// sempre aparece, para poder corrigir.
+const canClassifyReply = (row: PilotLoteRow): boolean =>
+  row.replyType !== null || row.respondeu || row.optOut || Boolean(row.reuniao);
+
+const canClassifyLoss = (row: PilotLoteRow, view: LeadView | undefined): boolean =>
+  row.lossReason !== null || (!row.reuniao && (view?.situacao === 'saiu' || view?.situacao === 'concluiu' || view?.situacao === 'conversando'));
+
 const Pilot: React.FC = () => {
   const [data, setData] = useState<PilotOverview | null>(null);
-  const [lote, setLote] = useState<PilotLote | null>(null);
+  const [campaign, setCampaign] = useState<PilotCampaign | null>(null);
   const [loading, setLoading] = useState(true);
+  const [drill, setDrill] = useState<LeadDrill | null>(null);
+  const [filtro, setFiltro] = useState<'todos' | Situacao>('todos');
+  const [busca, setBusca] = useState('');
+  const escalationsRef = useRef<HTMLElement>(null);
+  const lote = campaign?.lote ?? null;
+
+  const views = useMemo(() => toViews(lote?.rows ?? []), [lote]);
+  const viewOf = useMemo(() => new Map(views.map((v) => [v.row.contactId, v])), [views]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [overview, loteData] = await Promise.all([pilotApi.fetchOverview(), pilotApi.fetchLote()]);
+      const [overview, campaignData] = await Promise.all([pilotApi.fetchOverview(), pilotApi.fetchCampaign()]);
       setData(overview);
-      setLote(loteData);
+      setCampaign(campaignData);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Não foi possível carregar o painel do piloto.');
     } finally {
@@ -58,27 +80,80 @@ const Pilot: React.FC = () => {
   const saveOutcome = async (contactId: string, patch: { reply_type?: ReplyType | null; loss_reason?: string | null }) => {
     try {
       await pilotApi.saveOutcome(contactId, patch);
-      setLote((cur) => cur && {
+      setCampaign((cur) => cur && {
         ...cur,
-        rows: cur.rows.map((r) => (r.contactId !== contactId ? r : {
-          ...r,
-          ...('reply_type' in patch ? { replyType: patch.reply_type ?? null } : {}),
-          ...('loss_reason' in patch ? { lossReason: patch.loss_reason ?? null } : {}),
-        })),
+        lote: {
+          ...cur.lote,
+          rows: cur.lote.rows.map((r) => (r.contactId !== contactId ? r : {
+            ...r,
+            ...('reply_type' in patch ? { replyType: patch.reply_type ?? null } : {}),
+            ...('loss_reason' in patch ? { lossReason: patch.loss_reason ?? null } : {}),
+          })),
+        },
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Não foi possível salvar a classificação.');
     }
   };
 
-  const funnel = data?.funnel;
+  // Cards do topo: contam leads do lote (pessoas); testes internos aparecem à
+  // parte no rodapé do card e na lista, sem entrar no número.
+  const rows = lote?.rows ?? [];
+  const outside = campaign?.foraDoLote ?? [];
+  const outsideReplied = outside.filter((c) => c.respondeu);
+  const stages = buildFunnel(rows);
+  const stage = (key: string) => stages.find((s) => s.key === key)?.ids ?? [];
+  const bySituacao = groupBySituacao(views);
+  const abordados = rows
+    .filter((r) => r.touches.some((t) => ['enviado', 'entregue', 'lido', 'barrado', 'bounce'].includes(t.state)))
+    .map((r) => r.contactId);
+  const escaladas = data?.funnel.escaladas ?? 0;
+  const termo = busca.trim().toLocaleLowerCase('pt-BR');
+  const filteredRows = rows.filter((r) =>
+    (filtro === 'todos' || viewOf.get(r.contactId)?.situacao === filtro)
+    && (!termo || `${r.nome} ${r.empresa} ${r.cargo}`.toLocaleLowerCase('pt-BR').includes(termo)));
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const cards = [
-    { label: 'Leads captados', value: funnel?.captados ?? 0, icon: Users },
-    { label: 'Em cadência', value: funnel?.emCadencia ?? 0, icon: Send },
-    { label: 'Abordados', value: funnel?.abordados ?? 0, icon: Megaphone },
-    { label: 'Responderam', value: funnel?.responderam ?? 0, icon: MessageSquare },
-    { label: 'Reuniões', value: funnel?.reunioes ?? 0, icon: CalendarCheck },
-    { label: 'Escaladas', value: funnel?.escaladas ?? 0, icon: LifeBuoy },
+    {
+      label: 'Leads captados', value: rows.length, icon: Users,
+      foot: outside.length > 0 ? `+${plural(outside.length, 'teste fora da conta', 'testes fora da conta')}` : 'Leads do lote',
+      onClick: () => setDrill({ title: 'Leads captados', description: 'Todos os leads do lote, com a situação de cada um.', ids: rows.map((r) => r.contactId), outside }),
+    },
+    {
+      label: 'Em cadência', value: bySituacao.em_cadencia.length, icon: Send,
+      foot: 'Ainda vão receber toques',
+      onClick: () => setDrill({ title: 'Em cadência', description: 'Não responderam e ainda têm toques agendados.', ids: bySituacao.em_cadencia }),
+    },
+    {
+      label: 'Abordados', value: abordados.length, icon: Megaphone,
+      foot: 'Receberam ao menos um toque',
+      onClick: () => setDrill({ title: 'Abordados', description: 'Leads que já receberam ao menos um e-mail ou WhatsApp.', ids: abordados }),
+    },
+    {
+      label: 'Responderam', value: stage('respondeu').length, icon: MessageSquare,
+      foot: outsideReplied.length > 0 ? `+${plural(outsideReplied.length, 'teste', 'testes')} internos` : 'Por e-mail ou WhatsApp',
+      onClick: () => setDrill({
+        title: 'Responderam',
+        description: 'Quem respondeu e em que pé está: pediu para sair, conversa em andamento ou reunião.',
+        ids: stage('respondeu'),
+        outside: outsideReplied,
+      }),
+    },
+    {
+      label: 'Saíram da lista', value: bySituacao.saiu.length, icon: LogOut,
+      foot: 'Pediram para sair, bounce ou perda',
+      onClick: () => setDrill({ title: 'Saíram da lista', description: 'Quem saiu e o motivo de cada um.', ids: bySituacao.saiu }),
+    },
+    {
+      label: 'Reuniões', value: stage('reuniao').length, icon: CalendarCheck,
+      foot: plural(stage('qualificada').length, 'qualificada', 'qualificadas'),
+      onClick: () => setDrill({ title: 'Reuniões', description: 'Reuniões de venda marcadas pela Lis.', ids: stage('reuniao') }),
+    },
+    {
+      label: 'Escaladas', value: escaladas, icon: LifeBuoy,
+      foot: 'Aguardando um humano',
+      onClick: () => escalationsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    },
   ];
 
   return (
@@ -103,19 +178,30 @@ const Pilot: React.FC = () => {
         )}
 
         {/* Funil (Passo 7.4) */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4 mb-8">
           {cards.map((card) => (
-            <div key={card.label} className="rounded-xl border border-border p-4">
+            <button
+              key={card.label}
+              type="button"
+              onClick={card.onClick}
+              disabled={!campaign}
+              aria-label={`${card.label}: ${card.value}. Ver lista`}
+              className="group rounded-xl border border-border p-4 text-left transition-colors hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+            >
               <div className="flex items-center gap-2 text-muted-foreground text-xs">
                 <card.icon className="w-4 h-4" /> {card.label}
               </div>
-              <p className="text-2xl font-semibold mt-2">{loading && !data ? '—' : card.value}</p>
-            </div>
+              <p className="text-2xl font-semibold mt-2">{loading && !campaign ? '—' : card.value}</p>
+              <p className="mt-1 flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
+                <span>{card.foot}</span>
+                <ChevronRight className="w-3.5 h-3.5 shrink-0 opacity-60 group-hover:opacity-100" aria-hidden="true" />
+              </p>
+            </button>
           ))}
         </div>
 
         {/* Escaladas aguardando humano (Passo 7.3 / alerta da Elisandra) */}
-        <section className="mb-8">
+        <section className="mb-8 scroll-mt-6" ref={escalationsRef}>
           <div className="flex items-center gap-2 mb-3">
             <AlertTriangle className="w-4 h-4 text-amber-500" />
             <h2 className="text-lg font-semibold">Precisam de você</h2>
@@ -169,7 +255,11 @@ const Pilot: React.FC = () => {
         <section className="mb-8">
           <div className="flex items-center gap-2 mb-3">
             <h2 className="text-lg font-semibold">Lote atual</h2>
-            {lote && <Badge variant="secondary">{lote.rows.length} contatos</Badge>}
+            {lote && (
+              <Badge variant="secondary">
+                {filteredRows.length === lote.rows.length ? `${lote.rows.length} leads` : `${filteredRows.length} de ${lote.rows.length} leads`}
+              </Badge>
+            )}
           </div>
 
           {lote && (
@@ -192,11 +282,52 @@ const Pilot: React.FC = () => {
           )}
 
           {lote && lote.rows.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar leads do lote">
+              {(['todos', ...SITUACAO_ORDER] as const).map((key) => {
+                const count = key === 'todos' ? rows.length : bySituacao[key].length;
+                const active = filtro === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setFiltro(key)}
+                    aria-pressed={active}
+                    disabled={count === 0 && !active}
+                    className={`rounded-full border px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40 ${
+                      active ? 'border-foreground bg-foreground text-background' : 'border-border hover:bg-muted/50'
+                    }`}
+                  >
+                    {key === 'todos' ? 'Todos' : SITUACAO_LABEL[key]} <span className="tabular-nums opacity-70">{count}</span>
+                  </button>
+                );
+              })}
+              <label className="ml-auto flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+                <Search className="w-3.5 h-3.5 text-muted-foreground" aria-hidden="true" />
+                <input
+                  type="search"
+                  value={busca}
+                  onChange={(e) => setBusca(e.target.value)}
+                  placeholder="Buscar nome ou empresa"
+                  aria-label="Buscar lead por nome ou empresa"
+                  className="w-48 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                />
+              </label>
+            </div>
+          )}
+
+          {lote && lote.rows.length > 0 && filteredRows.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center">
+              <p className="text-sm text-muted-foreground">Nenhum lead com esse filtro.</p>
+            </div>
+          )}
+
+          {lote && filteredRows.length > 0 && (
             <div className="overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-muted-foreground border-b border-border">
                     <th className="p-3 font-medium">Lead</th>
+                    <th className="p-3 font-medium">Situação</th>
                     <th className="p-3 font-medium">Persona</th>
                     <th className="p-3 font-medium">Toques</th>
                     <th className="p-3 font-medium">Entregue</th>
@@ -208,13 +339,28 @@ const Pilot: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {lote.rows.map((row) => (
+                  {filteredRows.map((row) => (
                     <tr key={row.contactId} className="border-b border-border/60 last:border-0 align-top">
                       <td className="p-3 min-w-[12rem]">
                         <p className="font-medium">{row.nome}</p>
                         <p className="text-xs text-muted-foreground">
                           {[row.empresa !== '—' ? row.empresa : null, row.cargo !== '—' ? row.cargo : null].filter(Boolean).join(' · ')}
                         </p>
+                      </td>
+                      <td className="p-3 min-w-[11rem]">
+                        {(() => {
+                          const view = viewOf.get(row.contactId);
+                          if (!view) return '—';
+                          return (
+                            <>
+                              <p className="flex items-center gap-1.5 font-medium">
+                                <span className={`dash-swatch dash-sit--${view.situacao}`} aria-hidden="true" />
+                                {SITUACAO_LABEL[view.situacao]}
+                              </p>
+                              <p className="text-xs text-muted-foreground">{view.detalhe}</p>
+                            </>
+                          );
+                        })()}
                       </td>
                       <td className="p-3 whitespace-nowrap">{row.persona}{row.score !== null ? ` · ${row.score}` : ''}</td>
                       <td className="p-3">
@@ -234,18 +380,22 @@ const Pilot: React.FC = () => {
                       <td className="p-3">{row.respondeu ? 'Sim' : 'Não'}</td>
                       <td className="p-3">{row.autorizacao === 'sim' ? 'Sim' : row.autorizacao === 'negada' ? 'Negada' : '—'}</td>
                       <td className="p-3">
-                        <select
-                          className={selectClass}
-                          value={row.replyType ?? ''}
-                          onChange={(e) => saveOutcome(row.contactId, { reply_type: (e.target.value || null) as ReplyType | null })}
-                        >
-                          <option value="">
-                            {row.replyTypeSuggested ? `Sugestão: ${REPLY_TYPE_LABEL[row.replyTypeSuggested]}` : '—'}
-                          </option>
-                          {(Object.keys(REPLY_TYPE_LABEL) as ReplyType[]).map((key) => (
-                            <option key={key} value={key}>{REPLY_TYPE_LABEL[key]}</option>
-                          ))}
-                        </select>
+                        {canClassifyReply(row) ? (
+                          <select
+                            className={selectClass}
+                            value={row.replyType ?? ''}
+                            onChange={(e) => saveOutcome(row.contactId, { reply_type: (e.target.value || null) as ReplyType | null })}
+                          >
+                            <option value="">
+                              {row.replyTypeSuggested ? `Sugestão: ${REPLY_TYPE_LABEL[row.replyTypeSuggested]}` : 'Classificar…'}
+                            </option>
+                            {(Object.keys(REPLY_TYPE_LABEL) as ReplyType[]).map((key) => (
+                              <option key={key} value={key}>{REPLY_TYPE_LABEL[key]}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-xs text-muted-foreground" title="Só se preenche depois que o lead responder.">Sem resposta ainda</span>
+                        )}
                       </td>
                       <td className="p-3 whitespace-nowrap">
                         {row.reuniao ? (
@@ -256,16 +406,22 @@ const Pilot: React.FC = () => {
                         ) : '—'}
                       </td>
                       <td className="p-3">
-                        <select
-                          className={selectClass}
-                          value={row.lossReason ?? ''}
-                          onChange={(e) => saveOutcome(row.contactId, { loss_reason: e.target.value || null })}
-                        >
-                          <option value="">{row.lossReasonSuggested ? `Sugestão: ${row.lossReasonSuggested}` : '—'}</option>
-                          {LOSS_REASONS.map((reason) => (
-                            <option key={reason} value={reason}>{reason}</option>
-                          ))}
-                        </select>
+                        {canClassifyLoss(row, viewOf.get(row.contactId)) ? (
+                          <select
+                            className={selectClass}
+                            value={row.lossReason ?? ''}
+                            onChange={(e) => saveOutcome(row.contactId, { loss_reason: e.target.value || null })}
+                          >
+                            <option value="">{row.lossReasonSuggested ? `Sugestão: ${row.lossReasonSuggested}` : 'Se perdeu, por quê?'}</option>
+                            {LOSS_REASONS.map((reason) => (
+                              <option key={reason} value={reason}>{reason}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-xs text-muted-foreground" title="Só se preenche quando o lead sair ou a cadência terminar sem reunião.">
+                            {row.reuniao ? 'Tem reunião' : 'Em cadência'}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -275,7 +431,12 @@ const Pilot: React.FC = () => {
           )}
           <p className="text-xs text-muted-foreground mt-2">
             Passe o mouse nos toques para ver data e detalhe. Verde = entregue ou lido; vermelho = barrado pela Meta ou bounce.
-            “Sugestão” é o que o sistema inferiu; escolha um valor para registrar a classificação.
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            <strong className="font-medium text-foreground">Tipo de resposta</strong> e <strong className="font-medium text-foreground">Motivo de perda</strong> são
+            a leitura humana do lote (playbook 7.1 e 7.3): só aparecem quando há o que classificar — depois que o lead responde, sai
+            ou termina a cadência sem reunião. Alimentam os indicadores “Resposta positiva” e “Descadastro” e mostram por que
+            perdemos cada lead. “Sugestão” é o que o sistema inferiu; escolha um valor para confirmar.
           </p>
         </section>
 
@@ -320,6 +481,13 @@ const Pilot: React.FC = () => {
           )}
         </section>
       </div>
+
+      <LeadListSheet
+        drill={drill}
+        viewOf={viewOf}
+        conversationOf={campaign?.conversationOf ?? {}}
+        onClose={() => setDrill(null)}
+      />
     </div>
   );
 };
