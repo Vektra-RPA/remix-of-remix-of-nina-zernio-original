@@ -114,6 +114,11 @@ function render(text: string, vars: { nome: string; empresa: string }): string {
   return text.replaceAll('{nome}', vars.nome).replaceAll('{empresa}', vars.empresa);
 }
 
+/** Assunto das respostas no fio da cadência ("Re: ..."), usado pelos e-mails de reforço. */
+export function cadenceThreadSubject(vars: { nome: string; empresa: string }): string {
+  return `Re: ${render(SUBJECT, vars)}`;
+}
+
 /** Renderiza o e-mail aprovado para a persona + step. null se não houver template. */
 export function renderCadenceEmail(
   persona: CadencePersona,

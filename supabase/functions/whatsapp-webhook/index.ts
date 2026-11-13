@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { ensureEdgeSecrets } from "../_shared/system-config.ts";
+import { extractWaRef, stripWaRef } from "../_shared/wa-fallback.ts";
 
 declare const EdgeRuntime: {
   waitUntil(promise: Promise<any>): void;
@@ -248,6 +249,33 @@ serve(async (req) => {
             }
           }
 
+          // Lead que clicou no botão do e-mail de reforço (o WhatsApp da cadência não
+          // chegou) escrevendo de um número que não temos: o código da mensagem pronta
+          // liga a conversa ao contato certo, e este número passa a ser o dele.
+          const waRef = !contact && message.type === 'text' ? extractWaRef(message.text?.body || '') : null;
+          if (waRef) {
+            const { data: byRef } = await supabase
+              .from('contacts')
+              .select('*')
+              .eq('client_memory->>wa_ref', waRef)
+              .limit(1)
+              .maybeSingle();
+            if (byRef) {
+              const memory = byRef.client_memory && typeof byRef.client_memory === 'object' ? byRef.client_memory : {};
+              const linkedMemory = { ...memory, phone_previous: byRef.phone_number ?? null, wa_linked_at: new Date().toISOString() };
+              const { error: linkError } = await supabase
+                .from('contacts')
+                .update({ phone_number: phoneNumber, whatsapp_id: whatsappId, client_memory: linkedMemory })
+                .eq('id', byRef.id);
+              if (linkError) {
+                console.error('[Webhook] Falha ao ligar o número pelo código do e-mail:', linkError);
+              } else {
+                contact = { ...byRef, phone_number: phoneNumber, whatsapp_id: whatsappId, client_memory: linkedMemory };
+                console.log('[Webhook] Número ligado ao contato pelo código do e-mail:', byRef.id);
+              }
+            }
+          }
+
           if (!contact) {
             const { data: newContact, error: contactError } = await supabase
               .from('contacts')
@@ -325,7 +353,8 @@ serve(async (req) => {
 
           switch (message.type) {
             case 'text':
-              messageContent = message.text?.body || '';
+              // O código da mensagem pronta só serve para achar o contato; a Lis não o vê.
+              messageContent = stripWaRef(message.text?.body || '') || message.text?.body || '';
               messageType = 'text';
               break;
             case 'image':

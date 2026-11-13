@@ -1115,6 +1115,8 @@ export type Database = {
           channel: string
           contact_id: string
           created_at: string
+          fallback_email_at: string | null
+          fallback_status: string | null
           id: string
           last_error: string | null
           message_id: string | null
@@ -1131,6 +1133,8 @@ export type Database = {
           channel?: string
           contact_id: string
           created_at?: string
+          fallback_email_at?: string | null
+          fallback_status?: string | null
           id?: string
           last_error?: string | null
           message_id?: string | null
@@ -1147,6 +1151,8 @@ export type Database = {
           channel?: string
           contact_id?: string
           created_at?: string
+          fallback_email_at?: string | null
+          fallback_status?: string | null
           id?: string
           last_error?: string | null
           message_id?: string | null
