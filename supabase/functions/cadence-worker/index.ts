@@ -4,13 +4,12 @@ import { getUserFromToken } from "../_shared/auth.ts";
 import {
   CADENCE_STEPS,
   ENABLED_STEPS,
-  cadenceThreadSubject,
+  cadenceTema,
   renderCadenceEmail,
   waTemplateBody,
   type CadencePersona,
 } from "../_shared/cadence-templates.ts";
-import { buildWaFallbackEmail, newWaRef, type WaFallbackReason } from "../_shared/wa-fallback.ts";
-import { isExcludedEmail, isGenericEmail } from "../_shared/exclusions.ts";
+import { emailMatchesName, isExcludedEmail, isGenericEmail } from "../_shared/exclusions.ts";
 import { enqueueTemplateForContact, enqueueTemplateWithMessage } from "../_shared/template-dispatch.ts";
 import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 
@@ -25,9 +24,12 @@ import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 //
 // E-mail via a função email-send (que já faz rate limit + retry + descadastro). WhatsApp
 // (D3/D9) via template Meta aprovado por persona — ver trySendWhatsapp. Cada toque de
-// WhatsApp guarda a mensagem enviada (cadence_state.message_id): o D9 só sai se o D3
-// foi entregue. Toque que não chegou ao lead ganha um e-mail de reforço com o número e
-// um botão do WhatsApp (runWaFallbackEmails, liga com CADENCE_WA_FALLBACK=true).
+// WhatsApp guarda a mensagem enviada (cadence_state.message_id).
+//
+// Lote 2 (Fabiano, 18/11/2026): D0 e-mail -> D3 WhatsApp (Lis, assistente do Fabiano) ->
+// D7 e-mail -> D14 e-mail, os e-mails em nome do Fabiano e no mesmo fio. WhatsApp barrado
+// ou sem template aprovado: o toque é só pulado (sem e-mail de reforço). Nada sai depois
+// do D14 e qualquer resposta do lead cancela o resto.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -78,21 +80,9 @@ const WA_MAX_ATTEMPTS = Math.max(1, Number(Deno.env.get('CADENCE_WA_MAX_ATTEMPTS
 const WA_RETRY_AFTER_MS = Math.max(1, Number(Deno.env.get('CADENCE_WA_RETRY_AFTER_HOURS') || 20)) * 3_600_000;
 const WA_RETRY_FROM_HOUR = Number(Deno.env.get('CADENCE_WA_RETRY_FROM_HOUR') || 14);
 const DAILY_WA_RETRY_MAX = Math.max(0, Number(Deno.env.get('CADENCE_WA_RETRY_MAX') ?? 0));
-// E-mail de reforço quando o WhatsApp não chega (_shared/wa-fallback.ts). Liga com
-// CADENCE_WA_FALLBACK=true depois do OK do Fabiano no texto. A falha da Meta chega em
-// segundos; o e-mail espera 1h para não parecer automático. "Enviado" sem confirmação de
-// entrega só conta como não entregue depois de 24h.
-function waFallbackEnabled(): boolean {
-  return Deno.env.get('CADENCE_WA_FALLBACK') === 'true';
-}
-const WA_FALLBACK_NUMBER = (Deno.env.get('CADENCE_WA_FALLBACK_NUMBER') || '5542999978531').replace(/\D/g, '');
-// Ícone do botão, servido pela Vercel (public/email/). 'off' tira o ícone.
-const WA_FALLBACK_ICON_URL = (() => {
-  const raw = (Deno.env.get('CADENCE_WA_FALLBACK_ICON_URL') || 'https://nina-lis.vercel.app/email/whatsapp-branco.png').trim();
-  return raw === 'off' ? '' : raw;
-})();
-const WA_FALLBACK_AFTER_FAIL_MS = 60 * 60_000;
-const WA_FALLBACK_AFTER_UNCONFIRMED_MS = 24 * 3_600_000;
+// Remetente dos e-mails da cadência (o Fabiano). As respostas da Lis por e-mail usam o
+// nome padrão do email-send (EMAIL_FROM_NAME).
+const CADENCE_FROM_NAME = (Deno.env.get('CADENCE_EMAIL_FROM_NAME') || 'Fabiano Souza').trim();
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -137,7 +127,7 @@ function renderVars(contact: Contact): { nome: string; empresa: string } {
   const empresa = (typeof apollo.company === 'string' && apollo.company)
     || (typeof record(leadState.company).value === 'string' ? String(record(leadState.company).value) : '')
     || 'sua empresa';
-  return { nome: name || 'tudo bem', empresa };
+  return { nome: name, empresa };
 }
 
 function ignoreWindow(): boolean {
@@ -180,22 +170,15 @@ function brDayStartIso(): string {
   return new Date(Date.UTC(br.getUTCFullYear(), br.getUTCMonth(), br.getUTCDate()) + 3 * 3_600_000).toISOString();
 }
 
-/** E-mails da cadência já enviados hoje (dia de São Paulo), com os de reforço do WhatsApp. */
+/** E-mails da cadência já enviados hoje (dia de São Paulo). */
 async function emailsSentToday(supabase: SupabaseClient): Promise<number> {
-  const since = brDayStartIso();
-  const [steps, fallbacks] = await Promise.all([
-    supabase
-      .from('cadence_state')
-      .select('id', { count: 'exact', head: true })
-      .eq('channel', 'email')
-      .eq('status', 'sent')
-      .gte('sent_at', since),
-    supabase
-      .from('cadence_state')
-      .select('id', { count: 'exact', head: true })
-      .gte('fallback_email_at', since),
-  ]);
-  return (steps.count ?? 0) + (fallbacks.count ?? 0);
+  const { count } = await supabase
+    .from('cadence_state')
+    .select('id', { count: 'exact', head: true })
+    .eq('channel', 'email')
+    .eq('status', 'sent')
+    .gte('sent_at', brDayStartIso());
+  return count ?? 0;
 }
 
 /** Toques de WhatsApp da cadência já enviados hoje (dia de São Paulo). */
@@ -233,8 +216,10 @@ function emailNotVerified(contact: Contact): boolean {
 /** Filtros de entrada na campanha que não dependem do banco. */
 function notEligible(contact: Contact): boolean {
   return !contact.email || !personaOf(contact) || isSuppressed(contact) || hasReplied(contact)
+    || !renderVars(contact).nome       // os textos abrem com o nome do lead
     || isExcludedEmail(contact.email) // domínio próprio / cliente ativo
     || isGenericEmail(contact.email)   // contato@, comercial@, sac@...
+    || !emailMatchesName(contact.email, contact.name) // e-mail de outra pessoa (caso do lote 1)
     || emailNotVerified(contact);
 }
 
@@ -338,6 +323,7 @@ async function sendThreadedEmail(
   email: { subject: string; text: string; html?: string },
   memoryPatch: Record<string, unknown> = {},
 ): Promise<SendResult> {
+  // Remetente do Fabiano; o rodapé de descadastro já vem no texto aprovado do D0.
   const conversationId = await ensureEmailConversation(supabase, contact.id);
   if (!conversationId) return { ok: false, rateLimited: false, error: 'sem conversa', rfcMessageId: null };
 
@@ -349,6 +335,7 @@ async function sendThreadedEmail(
 
   const res = await callEmailSend({
     to: contact.email, subject: email.subject, text: email.text, html: email.html, conversationId, inReplyTo, references,
+    fromName: CADENCE_FROM_NAME, footer: false,
   });
   if (res.ok && (res.rfcMessageId || Object.keys(memoryPatch).length > 0)) {
     const thread = res.rfcMessageId
@@ -366,11 +353,12 @@ async function sendThreadedEmail(
  * template aprovado tem um número diferente de variáveis. A ordem/os campos vêm de
  * CADENCE_WA_PARAMS_STEP{n} (ex.: "name,title,company,company" para o
  * lis_abordagem_inicial, que usa {{1}} nome, {{2}} cargo, {{3}} e {{4}} empresa).
- * Tokens: name/nome, title/cargo, company/empresa, phone/telefone. Valores sempre
+ * Tokens: name/nome, title/cargo, company/empresa, phone/telefone, tema. Valores sempre
  * não-vazios (a Meta recusa parâmetro vazio). Assim dá para trocar de template só
  * mexendo no env, sem alterar código.
  */
 function buildWaParams(step: number, contact: Contact, vars: { nome: string; empresa: string }): string[] {
+  const persona = personaOf(contact);
   const spec = (Deno.env.get(`CADENCE_WA_PARAMS_STEP${step}`) || 'name,company').trim();
   const apollo = record(record(contact.client_memory).apollo);
   const cargo = (typeof apollo.title === 'string' && apollo.title.trim())
@@ -382,6 +370,8 @@ function buildWaParams(step: number, contact: Contact, vars: { nome: string; emp
       case 'title': case 'cargo': return cargo;
       case 'company': case 'empresa': return vars.empresa;
       case 'phone': case 'telefone': return contact.phone_number || vars.empresa;
+      // tema do e-mail do Fabiano (template lis_d3_fabiano_v1): P1 aprovações, P3 fechamento
+      case 'tema': return cadenceTema(persona ?? 'P1', vars);
       default: return key; // valor literal
     }
   };
@@ -623,156 +613,6 @@ async function runWaRetries(
     }
   }
   return dryRun ? { candidates } : { waRetried };
-}
-
-type WaTouchRow = {
-  id: string;
-  contact_id: string;
-  step: number;
-  status: string;
-  last_error: string | null;
-  sent_at: string | null;
-  messageStatus: string | null;
-};
-
-/** Por que o toque de WhatsApp não chegou ao lead (null = chegou ou ainda é cedo para dizer). */
-function waFallbackReasonOf(row: WaTouchRow, nowMs: number): WaFallbackReason | null {
-  if (row.status === 'skipped') return row.last_error === 'sem telefone' ? 'sem_whatsapp' : null;
-  if (row.status !== 'sent' || !row.sent_at) return null;
-  const age = nowMs - Date.parse(row.sent_at);
-  if (row.messageStatus === 'failed') return age >= WA_FALLBACK_AFTER_FAIL_MS ? 'nao_entregue' : null;
-  if (row.messageStatus === 'sent') return age >= WA_FALLBACK_AFTER_UNCONFIRMED_MS ? 'nao_entregue' : null;
-  return null;
-}
-
-/** Monta o e-mail de reforço do toque para o contato (o código do WhatsApp é reaproveitado). */
-function waFallbackEmailFor(contact: Contact, step: number, reason: WaFallbackReason) {
-  const vars = renderVars(contact);
-  const mem = record(contact.client_memory);
-  const ref = typeof mem.wa_ref === 'string' && mem.wa_ref ? mem.wa_ref : newWaRef();
-  const email = buildWaFallbackEmail({
-    persona: personaOf(contact),
-    step,
-    reason,
-    // renderVars troca nome/empresa ausentes por "tudo bem"/"sua empresa"; aqui fica vazio.
-    nome: vars.nome === 'tudo bem' ? '' : vars.nome,
-    empresa: vars.empresa === 'sua empresa' ? '' : vars.empresa,
-    subject: cadenceThreadSubject(vars),
-    phone: WA_FALLBACK_NUMBER,
-    ref,
-    iconUrl: WA_FALLBACK_ICON_URL,
-  });
-  return { email, ref };
-}
-
-/**
- * E-mail de reforço para o toque de WhatsApp que não chegou: a Meta barrou ou o número
- * não recebe (mensagem failed, depois de 1h), ficou sem confirmação de entrega por 24h,
- * ou o lead não tem celular. Um por toque, no mesmo fio da cadência, dentro da cota
- * diária de e-mail e só enquanto o próximo toque não saiu nem venceu. O D9 de quem não
- * recebeu o D3 já é pulado pela regra do playbook, então ninguém ganha dois reforços
- * seguidos. dryRun lista os candidatos sem enviar.
- *
- * catchup: recuperação dos toques anteriores ao recurso (lote 1, decisão Amanda 13/11/2026),
- * marcados pela migração com LEGACY_FALLBACK_MARK. Vão mesmo com a cadência já encerrada,
- * fora da janela e acima da cota diária (decisão explícita); continuam valendo supressão,
- * resposta e o limite por hora/minuto do email-send, então cada chamada envia o que o
- * limite deixa e a seguinte continua de onde parou.
- */
-const LEGACY_FALLBACK_MARK = 'skipped: anterior ao recurso';
-
-async function runWaFallbackEmails(
-  supabase: SupabaseClient,
-  dryRun = false,
-  catchup = false,
-): Promise<Record<string, unknown>> {
-  const nowMs = Date.now();
-  const pending = <T extends { is: (c: string, v: null) => T; eq: (c: string, v: string) => T }>(q: T): T =>
-    catchup ? q.eq('fallback_status', LEGACY_FALLBACK_MARK) : q.is('fallback_status', null);
-  const [failed, noPhone] = await Promise.all([
-    pending(supabase
-      .from('cadence_state')
-      .select('id, contact_id, step, status, last_error, sent_at, messages!inner(status)')
-      .eq('channel', 'whatsapp')
-      .eq('status', 'sent'))
-      .in('messages.status', ['failed', 'sent'])
-      .order('sent_at')
-      .limit(100),
-    pending(supabase
-      .from('cadence_state')
-      .select('id, contact_id, step, status, last_error, sent_at')
-      .eq('channel', 'whatsapp')
-      .eq('status', 'skipped')
-      .eq('last_error', 'sem telefone'))
-      .order('updated_at')
-      .limit(100),
-  ]);
-  const rows: WaTouchRow[] = [
-    ...((failed.data ?? []) as Array<Record<string, unknown>>).map((r) => ({
-      ...(r as unknown as WaTouchRow),
-      messageStatus: String(record(r.messages).status ?? '') || null,
-    })),
-    ...((noPhone.data ?? []) as WaTouchRow[]).map((r) => ({ ...r, messageStatus: null })),
-  ];
-
-  // Encerra o reforço do toque (não volta a ser avaliado nas próximas passadas).
-  const close = async (id: string, note: string) => {
-    if (!dryRun) await supabase.from('cadence_state').update({ fallback_status: note }).eq('id', id);
-  };
-
-  let sentToday = await emailsSentToday(supabase);
-  let waFallbackSent = 0;
-  let stoppedBy: string | null = null;
-  const candidates: Array<Record<string, unknown>> = [];
-  for (const row of rows) {
-    const reason = waFallbackReasonOf(row, nowMs);
-    if (!reason) continue;
-    // cota do dia cheia: o resto fica para o próximo dia útil (a recuperação não usa a cota)
-    if (!dryRun && !catchup && sentToday >= DAILY_EMAIL_MAX) { stoppedBy = 'cota diária'; break; }
-
-    // O próximo toque já saiu ou já venceu: o reforço chegaria fora de ordem.
-    if (!catchup) {
-      const { data: later } = await supabase
-        .from('cadence_state')
-        .select('status, scheduled_at')
-        .eq('contact_id', row.contact_id)
-        .gt('step', row.step)
-        .in('status', ['sent', 'sending', 'pending']);
-      const overtaken = (later ?? []).some((l: { status: string; scheduled_at: string }) =>
-        l.status !== 'pending' || Date.parse(l.scheduled_at) <= nowMs);
-      if (overtaken) { await close(row.id, 'skipped: próximo toque já saiu'); continue; }
-    }
-
-    const { data: contact } = await supabase
-      .from('contacts')
-      .select('id, email, name, call_name, phone_number, tags, client_memory')
-      .eq('id', row.contact_id)
-      .maybeSingle();
-    if (!contact || !contact.email || isSuppressed(contact) || hasReplied(contact)) {
-      await close(row.id, 'skipped: contato suprimido, sem e-mail ou já respondeu');
-      continue;
-    }
-
-    if (dryRun) {
-      candidates.push({ contactId: contact.id, name: contact.name, email: contact.email, persona: personaOf(contact), step: row.step, reason });
-      continue;
-    }
-
-    const { email, ref } = waFallbackEmailFor(contact, row.step, reason);
-    const res = await sendThreadedEmail(supabase, contact, email, { wa_ref: ref });
-    // limite por hora/minuto do email-send: o resto fica para o próximo ciclo
-    if (res.rateLimited) { stoppedBy = 'limite do email-send'; break; }
-    if (!res.ok) {
-      console.error('[cadence] e-mail de reforço do WhatsApp falhou', contact.id, res.error);
-      continue;
-    }
-    await supabase.from('cadence_state')
-      .update({ fallback_status: 'sent', fallback_email_at: new Date().toISOString() })
-      .eq('id', row.id);
-    waFallbackSent += 1;
-    sentToday += 1;
-  }
-  return dryRun ? { candidates } : { waFallbackSent, stoppedBy };
 }
 
 /** Domínio da empresa do contato (chave de agrupamento): domínio do e-mail ou o da Apollo. */
@@ -1058,13 +898,10 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     await anchorNext(supabase, contact.id, item.step);
   }
 
-  // 5) E-mail de reforço para o WhatsApp que não chegou (mesma cota diária de e-mail).
-  const waFallback = waFallbackEnabled() && !rateLimited ? await runWaFallbackEmails(supabase) : {};
-
-  // 6) Nova tentativa dos WhatsApps barrados pela Meta (à tarde, cota própria; desligada por padrão).
+  // 5) Nova tentativa dos WhatsApps barrados pela Meta (à tarde, cota própria; desligada por padrão).
   const waRetry = isRetryWindow() ? await runWaRetries(supabase, WA_PER_PASS) : {};
 
-  return { enrolled, sent, skipped, held, errors, rateLimited, ...waFallback, ...waRetry, ...reminders };
+  return { enrolled, sent, skipped, held, errors, rateLimited, ...waRetry, ...reminders };
 }
 
 serve(async (req) => {
@@ -1112,35 +949,50 @@ serve(async (req) => {
       return json({ ok: true, ...(await runWaRetries(supabase, 0, true)) });
     }
 
-    // Quem receberia o e-mail de reforço do WhatsApp agora (sem enviar nada).
-    if (action === 'wa_fallback_preview') {
-      return json({ ok: true, enabled: waFallbackEnabled(), ...(await runWaFallbackEmails(supabase, true)) });
-    }
-
-    // Recuperação do lote 1 (toques de WhatsApp anteriores ao recurso que não chegaram).
-    // Sem send:true só lista quem receberia.
-    if (action === 'wa_fallback_catchup') {
-      return json({ ok: true, ...(await runWaFallbackEmails(supabase, body.send !== true, true)) });
-    }
-
-    // Playbook 7.2: o e-mail de reforço para UM contato interno antes de ligar o recurso
-    // (sem janela, sem cota e sem mexer em cadence_state). reason: nao_entregue | sem_whatsapp.
-    if (action === 'test_wa_fallback') {
+    // Checklist do lote 2: teste interno da sequência completa num contato do time, para
+    // conferir ordem, fio do e-mail e remetente. Envia na hora, em ordem, os toques ativos
+    // (D0 e-mail, D3 WhatsApp se o template estiver aprovado, D7 e D14 no mesmo fio), sem
+    // janela, sem cota e sem mexer em cadence_state. Começa um fio novo a cada teste.
+    // body: { contactId, persona?: 'P1'|'P3', whatsapp?: boolean (default true) }
+    if (action === 'test_sequence') {
       if (typeof body.contactId !== 'string' || !body.contactId) return json({ error: 'contactId obrigatório' }, 400);
-      const { data: contact } = await supabase
-        .from('contacts').select('id, email, name, call_name, phone_number, tags, client_memory').eq('id', body.contactId).maybeSingle();
-      if (!contact?.email) return json({ error: 'Contato não encontrado ou sem e-mail' }, 404);
-      // Persona informada só para montar o texto (não é gravada no contato).
-      const mem = record(contact.client_memory);
-      const asPersona = !personaOf(contact) && (body.persona === 'P1' || body.persona === 'P3')
-        ? { ...contact, client_memory: { ...mem, apollo: { ...record(mem.apollo), persona: body.persona } } }
-        : contact;
-      const reason: WaFallbackReason = body.reason === 'sem_whatsapp' ? 'sem_whatsapp' : 'nao_entregue';
-      const { email, ref } = waFallbackEmailFor(asPersona, Number(body.step) || 2, reason);
-      const res = await sendThreadedEmail(supabase, contact, email, { wa_ref: ref });
-      return json({ ok: res.ok, error: res.error, ref, link: email.link });
-    }
+      const cols = 'id, email, name, call_name, phone_number, tags, client_memory';
+      const load = async (): Promise<Contact | null> => {
+        const { data } = await supabase.from('contacts').select(cols).eq('id', body.contactId).maybeSingle();
+        if (!data) return null;
+        const mem = record(data.client_memory);
+        if (body.persona === 'P1' || body.persona === 'P3') {
+          data.client_memory = { ...mem, apollo: { ...record(mem.apollo), persona: body.persona } };
+        }
+        return data;
+      };
+      const first = await load();
+      if (!first?.email) return json({ error: 'Contato não encontrado ou sem e-mail' }, 404);
+      const persona = personaOf(first);
+      if (!persona) return json({ error: 'Informe persona P1 ou P3 (o contato não tem uma)' }, 400);
+      const mem0 = record(first.client_memory);
+      const ls0 = { ...record(mem0.lead_state) };
+      delete ls0.email_thread; // fio novo
+      await supabase.from('contacts').update({ client_memory: { ...mem0, lead_state: ls0 } }).eq('id', first.id);
 
+      const results: Array<Record<string, unknown>> = [];
+      for (const def of ENABLED_STEPS) {
+        const contact = await load();
+        if (!contact) break;
+        if (def.channel === 'whatsapp') {
+          if (body.whatsapp === false) { results.push({ step: def.step, canal: 'whatsapp', skipped: 'desligado no teste' }); continue; }
+          const wa = await trySendWhatsapp(supabase, contact, def.step);
+          results.push({ step: def.step, canal: 'whatsapp', sent: wa.sent, reason: wa.reason || null });
+          continue;
+        }
+        const tpl = renderCadenceEmail(persona, def.step, renderVars(contact));
+        if (!tpl) { results.push({ step: def.step, canal: 'email', sent: false, reason: 'sem template' }); continue; }
+        const res = await sendThreadedEmail(supabase, contact, { subject: tpl.subject, text: tpl.body });
+        results.push({ step: def.step, dia: `D${def.offsetDays}`, canal: 'email', subject: tpl.subject, sent: res.ok, error: res.error, messageId: res.rfcMessageId });
+        if (!res.ok) break; // não manda o resto fora de ordem
+      }
+      return json({ ok: true, persona, fromName: CADENCE_FROM_NAME, results });
+    }
     if (action !== 'run') return json({ error: 'Ação desconhecida' }, 400);
     return json({ ok: true, ...(await runPass(supabase)) });
   } catch (error) {

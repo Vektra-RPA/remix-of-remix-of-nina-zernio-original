@@ -24,6 +24,7 @@ import { consumeRateLimit, RateLimitError } from "../_shared/rate-limit.ts";
 import { buildHandoffPackage } from "../_shared/handoff-package.ts";
 import { enqueueTemplateForContact } from "../_shared/template-dispatch.ts";
 import { upsertUnifiedContact, derivePersona } from "../_shared/lead-identity.ts";
+import { closeLeftCompany, saysLeftCompany } from "../_shared/left-company.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -226,6 +227,23 @@ const registerReferralTool = {
         confirmation_evidence: { type: "string", description: "Trecho literal recente em que o lead indicou a outra pessoa." },
       },
       required: ["referred_name", "confirmation_evidence"],
+    },
+  },
+};
+
+// Ajuste do Fabiano (lote 2): "não trabalho mais na empresa" encerra o lead como
+// "Mudou de cargo ou empresa" (_shared/left-company.ts). Regra fixa da plataforma, como o opt-out.
+const registerLeftCompanyTool = {
+  type: "function",
+  function: {
+    name: "register_left_company",
+    description: "Registrar que o lead não trabalha mais na empresa (saiu, foi desligado, mudou de empresa ou de cargo e não cuida mais do assunto). Encerra o lead como 'Mudou de cargo ou empresa', cancela a cadência e pausa a conversa. Depois de chamar, agradeça em uma frase curta e encerre, sem novas perguntas.",
+    parameters: {
+      type: "object",
+      properties: {
+        confirmation_evidence: { type: "string", description: "Trecho literal recente em que o lead diz que não está mais na empresa." },
+      },
+      required: ["confirmation_evidence"],
     },
   },
 };
@@ -1426,7 +1444,7 @@ async function processQueueItem(
   // habilitar uma ferramenta que o snapshot publicado desabilitou.
   const appointmentPolicy = getActionPolicy(runtimeAgent?.config, 'appointments');
   const handoffPolicy = getActionPolicy(runtimeAgent?.config, 'human_handoff');
-  const extraTools: any[] = [registerOptOutTool, registerConsentTool, registerReferralTool, shareChecklistTool];
+  const extraTools: any[] = [registerOptOutTool, registerConsentTool, registerReferralTool, registerLeftCompanyTool, shareChecklistTool];
   if (appointmentPolicy) extraTools.push(checkAvailabilityTool, createAppointmentTool, rescheduleAppointmentTool, cancelAppointmentTool);
   if (handoffPolicy) extraTools.push(humanHandoffTool);
 
@@ -1557,6 +1575,15 @@ async function processQueueItem(
           return { success: true, referred: referredName, new_contact_id: newContactId, needs_human_followup: !newContactId };
         });
         return { result, ok: result.success === true, summary: result.error || 'referral_registered' };
+      }
+
+      if (name === 'register_left_company') {
+        const result = await audit(name, () => closeLeftCompany(supabase, {
+          contactId: conversation.contact_id,
+          conversationId: conversation.id,
+          quote: typeof args.confirmation_evidence === 'string' ? args.confirmation_evidence : null,
+        }));
+        return { result, ok: result.success === true, summary: result.error || 'left_company_registered' };
       }
 
       if (name === 'register_opt_out') {
@@ -1788,10 +1815,23 @@ async function processQueueItem(
     }))
   ));
   const handoffObserved = toolSummaries.some((event: any) => event.tool === 'human_handoff' && event.ok);
+
+  // Rede de segurança: o lead disse que não está mais na empresa e o modelo não chamou
+  // register_left_company — encerra do mesmo jeito (a resposta da Lis segue normalmente).
+  const leftCompanyByTool = toolSummaries.some((event: any) => event.tool === 'register_left_company' && event.ok);
+  if (!leftCompanyByTool && saysLeftCompany(message.content)) {
+    const closed = await closeLeftCompany(supabase, {
+      contactId: conversation.contact_id,
+      conversationId: conversation.id,
+      quote: typeof message.content === 'string' ? message.content.slice(0, 300) : null,
+    });
+    console.log('[Nina] lead mudou de empresa (rede de segurança):', closed.success ? 'encerrado' : closed.error);
+  }
   const guards = [
     ...(grounding.unanswered.length > 0 ? ['unknown_answer_policy'] : []),
     ...(toolSummaries.some((event: any) => event.summary === 'explicit_confirmation_required') ? ['explicit_confirmation_required'] : []),
     ...(toolSummaries.some((event: any) => event.tool === 'register_opt_out' && event.ok) ? ['opt_out'] : []),
+    ...(leftCompanyByTool || saysLeftCompany(message.content) ? ['left_company'] : []),
   ];
   const { error: runtimeEventError } = await supabase.from('agent_runtime_events').insert({
     workspace_id: runtimeAgent.workspaceId,

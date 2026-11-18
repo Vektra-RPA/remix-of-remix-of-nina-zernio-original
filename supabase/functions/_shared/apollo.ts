@@ -5,6 +5,7 @@
  */
 
 import { derivePersona, type Persona } from './lead-identity.ts';
+import { emailMatchesName } from './exclusions.ts';
 
 const GATEWAY_URL = 'https://connector-gateway.lovable.dev/apollo';
 const APOLLO_DIRECT_URL = 'https://api.apollo.io';
@@ -209,12 +210,85 @@ function scoreRegiao(person: any): { points: number; reason: string } {
   return { points: 5, reason: 'Fora da região prioritária' };
 }
 
+// ===== Travas do lote 2 (Fabiano, 18/11/2026) =====
+// No lote 1, ~17 dos 75 estavam fora do perfil (TI, serviços, faculdade, farmácia,
+// logística, construtora, multinacionais): cargo P1 + porte + região já somavam 60 sem
+// nenhum sinal de indústria. Agora, além do score, o lead precisa passar nestas travas.
+
+// Setores da Apollo (organization.industry) que são indústria de transformação.
+const INDUSTRY_ALLOW = [
+  'machinery', 'plastics', 'cosmetics', 'chemicals', 'mining & metals', 'automotive',
+  'electrical/electronic manufacturing', 'mechanical or industrial engineering',
+  'industrial automation', 'food production', 'food & beverages', 'consumer goods',
+  'glass, ceramics & concrete', 'railroad manufacture', 'medical devices', 'paper & forest products',
+  'packaging & containers', 'textiles', 'furniture', 'building materials', 'printing',
+  'pharmaceuticals', 'aviation & aerospace', 'defense & space', 'semiconductors', 'oil & energy',
+  'shipbuilding', 'dairy', 'wine & spirits', 'tobacco', 'apparel & fashion',
+  'sporting goods', 'luxury goods & jewelry', 'manufacturing',
+];
+// Nome de empresa que denuncia comércio/serviço mesmo com setor de indústria na Apollo.
+const NON_INDUSTRY_NAME = /\b(distribuidora|atacad\w*|farmacia|drogaria|construtora|transportes?|logistica|faculdade|universidade|escola|software|consultoria|advocacia|contabilidade|imobiliaria|locadora|locacao)\b/;
+// Indício de multinacional: subsidiária "do Brasil"/"Brasil" no nome ou domínio de outro país.
+const MULTINATIONAL_NAME = /\b(do brasil|brasil ltda|brasil s\.?a|brazil)\b|\bbrasil$/;
+const FOREIGN_TLD = /\.(it|de|fr|es|pt|jp|cn|uk|nl|ch|se|at|be|dk|fi|no|kr|in|mx|ar|cl|us)$/;
+
+function normText(value: unknown): string {
+  return String(value ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+/**
+ * Motivo para o lead NÃO entrar na campanha (null = passa). Cargo é tratado no
+ * derivePersona; aqui ficam setor, multinacional, e-mail e vínculo atual.
+ */
+// deno-lint-ignore no-explicit-any
+export function icpRejection(person: any): string | null {
+  const org = person?.organization ?? {};
+  const industry = normText(org.industry);
+  const name = normText(org.name ?? person?.organization_name);
+  const domain = normText(org.primary_domain ?? org.website_url).replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+  // O nome "Indústria ..." vale mais que o setor da Apollo, que às vezes erra (ex.: Eletrisol
+  // Indústria e Comércio veio como "information technology & services").
+  const industryByName = /\b(industria|industrias|ind\.? e com|metalurgica|plasticos|cosmeticos|quimica)\b/.test(name);
+  const industryOk = industryByName || INDUSTRY_ALLOW.includes(industry);
+  if (!industryOk) return `Setor fora do ICP (${org.industry || 'sem setor'})`;
+  if (NON_INDUSTRY_NAME.test(name)) return 'Empresa de comércio/serviço (pelo nome)';
+
+  const country = normText(org.country);
+  if (MULTINATIONAL_NAME.test(name) || FOREIGN_TLD.test(domain) || (country && country !== 'brazil' && country !== 'brasil')
+    || org.publicly_traded_symbol) {
+    return 'Provável multinacional ou subsidiária';
+  }
+
+  if (!person?.email) return 'Sem e-mail';
+  if (String(person?.email_status ?? '').toLowerCase() !== 'verified') return 'E-mail não verificado na Apollo';
+  if (!emailMatchesName(person.email, person.name ?? `${person.first_name ?? ''} ${person.last_name ?? ''}`)) {
+    return 'E-mail não parece ser da pessoa';
+  }
+
+  // Vínculo atual: o histórico precisa ter um cargo "current" na mesma empresa.
+  const history = Array.isArray(person?.employment_history) ? person.employment_history : [];
+  if (history.length > 0) {
+    // deno-lint-ignore no-explicit-any
+    const current = history.filter((h: any) => h?.current === true && !h?.end_date);
+    const firstWord = name.split(' ')[0] ?? '';
+    // deno-lint-ignore no-explicit-any
+    const sameOrg = current.some((h: any) =>
+      (h.organization_id && h.organization_id === (person.organization_id ?? org.id))
+      || (firstWord.length >= 3 && normText(h.organization_name).includes(firstWord)));
+    if (!sameOrg) return 'Sem cargo atual na empresa (histórico da Apollo)';
+  }
+  return null;
+}
+
 export interface LeadScore {
   score: number;
   reasons: string[];
   persona: Persona;
-  /** Cargo P1/P3 E total ≥ 60. Cargo fora de P1/P3 nunca qualifica. */
+  /** Cargo P1/P3, total ≥ 60 e sem trava do ICP. Cargo fora de P1/P3 nunca qualifica. */
   qualified: boolean;
+  /** Motivo da trava do ICP (setor, multinacional, e-mail, vínculo), se houver. */
+  rejection: string | null;
 }
 
 /** Score 0–100 conforme o playbook Indústrias v2.2 (Passo 1.4). */
@@ -240,6 +314,8 @@ export function scoreLead(person: any): LeadScore {
   reasons.push(regiao.reason);
 
   const score = Math.min(100, cargoPoints + porte.points + setor.points + sinais.points + regiao.points);
-  const qualified = persona !== null && score >= 60;
-  return { score, reasons, persona, qualified };
+  const rejection = persona === null ? null : icpRejection(person);
+  if (rejection) reasons.push(`Trava do ICP: ${rejection}`);
+  const qualified = persona !== null && score >= 60 && !rejection;
+  return { score, reasons, persona, qualified, rejection };
 }

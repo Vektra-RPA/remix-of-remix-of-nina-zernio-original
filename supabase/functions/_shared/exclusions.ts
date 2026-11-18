@@ -54,3 +54,24 @@ export function isGenericEmail(email?: string | null): boolean {
   const local = String(email ?? '').toLowerCase().trim().split('@')[0];
   return !!local && GENERIC_LOCAL_PARTS.has(local);
 }
+
+function letters(value: string): string {
+  // sem acento: o NFD separa a letra do acento e o [^a-z] descarta o resto
+  return value.toLowerCase().normalize('NFD').replace(/[^a-z]/g, '');
+}
+
+/**
+ * O e-mail parece ser da própria pessoa? (checklist do lote 2: validar o contato.) No lote 1
+ * a Apollo trouxe como "verified" o e-mail de uma colega para um diretor que nem
+ * trabalhava mais lá. Aceita quando a parte antes do @ contém o primeiro nome, um sobrenome
+ * (3+ letras) ou começa pelas iniciais (ex.: mb@ para Marco Bueno). Sem nome: não bloqueia.
+ */
+export function emailMatchesName(email?: string | null, fullName?: string | null): boolean {
+  const local = letters(String(email ?? '').split('@')[0] ?? '');
+  const parts = String(fullName ?? '').split(/\s+/).map(letters).filter(Boolean);
+  if (!local || parts.length === 0) return true;
+  if (parts.some((p) => p.length >= 3 && local.includes(p))) return true;
+  if (parts.some((p) => p.length >= 4 && local.includes(p.slice(0, 4)))) return true; // apelido/abreviação
+  const initials = parts.map((p) => p[0]).join('');
+  return initials.length >= 2 && local.startsWith(initials.slice(0, 2));
+}

@@ -142,7 +142,7 @@ serve(async (request) => {
       // deno-lint-ignore no-explicit-any
       const p = person as any;
       const phone = extractPhone(p);
-      const { score, reasons, persona, qualified } = scoreLead(p);
+      const { score, reasons, persona, qualified, rejection } = scoreLead(p);
       const organization = p.organization ?? {};
       // Exclusão (playbook): não prospectar domínio próprio nem cliente ativo.
       const excluded = isExcludedEmail(p.email)
@@ -181,7 +181,7 @@ serve(async (request) => {
             ? null
             : (excluded
               ? 'Domínio próprio ou cliente ativo'
-              : (persona === null ? 'Cargo fora do ICP (P1/P3)' : 'Score abaixo de 60')),
+              : (persona === null ? 'Cargo fora do ICP (P1/P3)' : (rejection ?? 'Score abaixo de 60'))),
           run_id: runId,
           raw: { person: p },
         })

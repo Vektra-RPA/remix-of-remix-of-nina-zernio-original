@@ -100,7 +100,7 @@ serve(async (req) => {
 
     const { data: currentDeal } = await supabase
       .from('deals')
-      .select('id, stage_id, stage')
+      .select('id, stage_id, stage, lost_at, won_at')
       .eq('contact_id', contact_id)
       .eq('user_id', contact.user_id)
       .order('created_at', { ascending: false })
@@ -358,7 +358,9 @@ ESTÁGIO ATUAL DO DEAL: ${currentDeal?.stage || 'Sem estágio'}` : ''}
 
     // Move deal if confidence > 70% and stage is different
     let dealMoved = false;
-    if (stageResult && currentDeal && stageResult.suggested_stage_id !== currentDeal.stage_id && stageResult.confidence > 70) {
+    // Negócio encerrado (perdido/ganho, ex.: "mudou de empresa") não volta a andar sozinho.
+    const dealClosed = !!(currentDeal?.lost_at || currentDeal?.won_at);
+    if (stageResult && currentDeal && !dealClosed && stageResult.suggested_stage_id !== currentDeal.stage_id && stageResult.confidence > 70) {
       const newStage = stages?.find(s => s.id === stageResult.suggested_stage_id);
       
       if (newStage) {

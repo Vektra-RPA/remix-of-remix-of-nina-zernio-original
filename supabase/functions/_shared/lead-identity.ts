@@ -14,20 +14,36 @@ type SupabaseClient = any;
 export type Persona = 'P1' | 'P3' | null;
 
 // P1 = dono/sócio; P3 = diretor administrativo-financeiro (playbook Indústrias).
+// Lote 2 (Fabiano, 18/11/2026): só dono/sócio e diretor financeiro — sem "managing
+// director" nem gerentes, e fora quem acumula área comercial, industrial ou de operações.
 const P1_TITLES = [
   'owner', 'founder', 'co-founder', 'cofounder', 'ceo', 'chief executive',
   'presidente', 'president', 'sócio', 'socio', 'sócio-diretor', 'socio-diretor',
-  'proprietário', 'proprietario', 'managing director', 'dono',
+  'proprietário', 'proprietario', 'dono',
 ];
 const P3_TITLES = [
   'cfo', 'chief financial', 'controller', 'controladoria', 'controladora',
   'diretor administrativo', 'diretora administrativa', 'diretor financeiro',
   'diretora financeira', 'administrativo e financeiro', 'diretor adm',
-  'gerente financeiro', 'gerente administrativo', 'finance director',
+  'finance director', 'financial director', 'head of finance',
 ];
+// Cargo que acumula área fora do ICP desta fase: exclui mesmo se também disser "sócio".
+const EXCLUDED_TITLE_PATTERNS: RegExp[] = [
+  /comercia/, /vendas/, /sales/, /marketing/, /cco/,
+  /industrial/, /opera[cç][oõã]/, /operations/, /coo/, /produ[cç][aã]o/, /manufatura/,
+  /cto/, /ti/, /tecnologia/, /novos neg[oó]cios/, /relacionamento/,
+  /tax/, /analista/, /assistente/, /compras/, /purchasing/, /log[ií]stica/,
+];
+
+/** Cargo explicitamente fora do ICP (comercial, industrial, operações, TI...). */
+export function isExcludedTitle(title?: string | null): boolean {
+  const t = (title ?? '').toLowerCase();
+  return !!t.trim() && EXCLUDED_TITLE_PATTERNS.some((re) => re.test(t));
+}
 
 /** Deriva a persona (P1/P3) pelo cargo; null quando não se encaixa. */
 export function derivePersona(title?: string | null, seniority?: string | null): Persona {
+  if (isExcludedTitle(title)) return null;
   const haystack = `${title ?? ''} ${seniority ?? ''}`.toLowerCase();
   if (!haystack.trim()) return null;
   if (P1_TITLES.some((word) => haystack.includes(word))) return 'P1';

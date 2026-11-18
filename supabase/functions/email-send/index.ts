@@ -51,6 +51,7 @@ type EmailConfig = {
   apiKey: string;
   from: string;      // "Nome <email@dominio>"
   fromEmail: string;
+  fromName: string;
   replyTo: string | null;
   unsubscribe: string;
 };
@@ -64,6 +65,7 @@ function emailConfigOrNull(): EmailConfig | null {
     apiKey,
     from: `${fromName} <${fromEmail}>`,
     fromEmail,
+    fromName,
     replyTo: (Deno.env.get('EMAIL_REPLY_TO') || '').trim() || null,
     unsubscribe: (Deno.env.get('EMAIL_UNSUBSCRIBE_TEXT') || DEFAULT_UNSUBSCRIBE).trim(),
   };
@@ -85,7 +87,7 @@ function isTransient(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
-type SendArgs = { to: string; subject: string; text: string; html?: string | null; headers?: Record<string, string> };
+type SendArgs = { to: string; subject: string; text: string; html?: string | null; headers?: Record<string, string>; from?: string };
 
 async function sendViaResend(cfg: EmailConfig, args: SendArgs): Promise<{ ok: boolean; id: string | null; status: number; error: string | null }> {
   let lastError = '';
@@ -97,7 +99,7 @@ async function sendViaResend(cfg: EmailConfig, args: SendArgs): Promise<{ ok: bo
         method: 'POST',
         headers: { Authorization: `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: cfg.from,
+          from: args.from || cfg.from,
           to: [args.to],
           subject: args.subject,
           text: args.text,
@@ -207,11 +209,19 @@ serve(async (req) => {
       }
     }
 
+    // Nome de exibição por envio (mesmo endereço): a cadência sai como "Fabiano Souza" e a
+    // Lis responde com o nome padrão. Só texto simples, sem <> nem quebra de linha.
+    const fromNameOverride = typeof body.fromName === 'string' ? body.fromName.replace(/[<>"\r\n]/g, '').trim() : '';
+    const from = fromNameOverride ? `${fromNameOverride} <${cfg.fromEmail}>` : cfg.from;
+
     // Rodapé de descadastro (playbook 3.2) — anexado se ainda não estiver no corpo.
+    // footer:false = o texto já traz o próprio aviso (D0 do lote 2) ou é um follow-up
+    // no mesmo fio, que vai sem rodapé.
+    const footer = body.footer !== false;
     const unsub = cfg.unsubscribe;
-    const finalText = text.includes(unsub) ? text : `${text}\n\n—\n${unsub}`;
+    const finalText = !footer || text.includes(unsub) ? text : `${text}\n\n—\n${unsub}`;
     const finalHtml = html
-      ? (html.includes(unsub) ? html : `${html}\n<p style="color:#8a94a6;font-size:12px">—<br>${escapeHtml(unsub)}</p>`)
+      ? (!footer || html.includes(unsub) ? html : `${html}\n<p style="color:#8a94a6;font-size:12px">—<br>${escapeHtml(unsub)}</p>`)
       : null;
 
     // Threading: Message-ID próprio (controlado por nós) para os steps da cadência
@@ -225,7 +235,7 @@ serve(async (req) => {
       headers['References'] = references ? `${references} ${inReplyTo}`.trim() : inReplyTo;
     }
 
-    const result = await sendViaResend(cfg, { to, subject, text: finalText, html: finalHtml, headers });
+    const result = await sendViaResend(cfg, { to, subject, text: finalText, html: finalHtml, headers, from });
     if (!result.ok) {
       return json({ error: result.error, code: result.status === 401 || result.status === 403 ? 'auth' : 'send_failed', providerStatus: result.status }, 502);
     }
@@ -250,6 +260,7 @@ serve(async (req) => {
           in_reply_to: inReplyTo,
           references,
           priority,
+          from_name: fromNameOverride || cfg.fromName,
         },
       })
       .select('id')
