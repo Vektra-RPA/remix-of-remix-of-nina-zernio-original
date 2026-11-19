@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { assignLotes, type LoteInfo } from '@/domain/lotes';
 
 // Painel do piloto (Épico H — Passos 7.3/7.4 do playbook). Lê o estado que já
 // existe no banco (contatos, conversas, agendamentos, cadência) e monta o funil
@@ -137,6 +138,9 @@ export interface PilotLoteRow {
   bounced: boolean;
   respondeuEm: string | null;
   canalResposta: string | null;
+  /** Lote em que o lead entrou (1, 2, ...) e quando esse lote começou (ver domain/lotes). */
+  lote: number;
+  loteInicio: string | null;
 }
 
 export interface PilotIndicator {
@@ -149,7 +153,8 @@ export interface PilotIndicator {
 
 export interface PilotLote {
   rows: PilotLoteRow[];
-  indicators: PilotIndicator[];
+  /** Lotes em ordem de chegada; os indicadores são calculados por lote (buildLoteIndicators). */
+  lotes: LoteInfo[];
 }
 
 export interface PilotCampaignReply {
@@ -218,11 +223,36 @@ function hasField(leadState: Record<string, unknown>, key: string): boolean {
   return typeof field.value === 'string' && field.value.trim() !== '';
 }
 
+/** Indicadores do Passo 7.4 sobre um lote (contatos com cadência). */
+export function buildLoteIndicators(rows: PilotLoteRow[]): PilotIndicator[] {
+  const total = rows.length;
+  const emailed = rows.filter((r) => r.touches.some((t) => t.canal === 'E-mail' && (t.state === 'enviado' || t.state === 'bounce'))).length;
+  const bounced = rows.filter((r) => r.touches.some((t) => t.state === 'bounce')).length;
+  const replied = rows.filter((r) => r.respondeu).length;
+  const typeOf = (r: PilotLoteRow) => r.replyType ?? r.replyTypeSuggested;
+  const positive = rows.filter((r) => typeOf(r) === 'positiva').length;
+  const consented = rows.filter((r) => r.respondeu && r.autorizacao === 'sim').length;
+  const optOuts = rows.filter((r) => typeOf(r) === 'descadastro').length;
+  const qualified = rows.filter((r) => r.qualificada).length;
+  const waTouches = rows.flatMap((r) => r.touches.filter((t) => t.canal === 'WhatsApp' && ['enviado', 'entregue', 'lido', 'barrado'].includes(t.state)));
+  const waDelivered = waTouches.filter((t) => t.state === 'entregue' || t.state === 'lido').length;
+
+  return [
+    { label: 'Bounce', value: pct(bounced, emailed), detail: `${bounced} de ${emailed} com e-mail enviado`, reference: 'Abaixo de 3%', alert: emailed > 0 && bounced / emailed > 0.03 },
+    { label: 'Resposta total', value: pct(replied, total), detail: `${replied} de ${total}`, reference: 'Mercado: 3 a 8% (varia por setor)', alert: false },
+    { label: 'Resposta positiva', value: pct(positive, total), detail: `${positive} de ${total}`, reference: 'Costuma ficar entre 1 e 3%', alert: false },
+    { label: 'Autorização entre quem respondeu', value: pct(consented, replied), detail: `${consented} de ${replied}`, reference: 'Sem referência: medir no lote 1', alert: false },
+    { label: 'Descadastro ou reclamação', value: pct(optOuts, total), detail: `${optOuts} de ${total}`, reference: 'Abaixo de 1 a 2% (acima disso, pare o lote)', alert: total > 0 && optOuts / total > 0.02 },
+    { label: 'Reunião qualificada por 100 contatos', value: total > 0 ? ((qualified / total) * 100).toFixed(1).replace('.', ',') : '—', detail: `${qualified} reunião(ões) qualificada(s)`, reference: 'Meta definida após o lote 1', alert: false },
+    { label: 'WhatsApp entregue', value: pct(waDelivered, waTouches.length), detail: `${waDelivered} de ${waTouches.length} toques`, reference: 'Barrado pela Meta: o toque é pulado', alert: false },
+  ];
+}
+
 export const pilotApi = {
   fetchLote: async (): Promise<PilotLote> => {
     const { data: steps, error } = await supabase
       .from('cadence_state')
-      .select('contact_id, step, channel, status, sent_at, scheduled_at, last_error, attempts, message:messages(status, metadata)')
+      .select('contact_id, step, channel, status, sent_at, scheduled_at, last_error, attempts, created_at, message:messages(status, metadata)')
       .order('step')
       .limit(5000);
     if (error) throw error;
@@ -234,6 +264,11 @@ export const pilotApi = {
       byContact.set(s.contact_id, list);
     }
     const ids = [...byContact.keys()];
+    // Matrícula de cada lead = criação do primeiro passo da cadência; agrupa em lotes.
+    const { loteOf, lotes } = assignLotes(ids.map((id) => ({
+      id,
+      at: (byContact.get(id) ?? []).map((s) => String(s.created_at ?? '')).filter(Boolean).sort()[0] ?? '',
+    })));
 
     const contacts: any[] = [];
     const appointments: any[] = [];
@@ -310,33 +345,12 @@ export const pilotApi = {
         bounced: Boolean(bouncedAt),
         respondeuEm: typeof memory.replied_at === 'string' ? memory.replied_at : null,
         canalResposta: typeof memory.last_reply_channel === 'string' ? memory.last_reply_channel : null,
+        lote: loteOf.get(contact.id)?.numero ?? 1,
+        loteInicio: loteOf.get(contact.id)?.inicio ?? null,
       };
     }).sort((a, b) => a.empresa.localeCompare(b.empresa, 'pt-BR'));
 
-    // Indicadores do Passo 7.4 sobre o lote (contatos com cadência).
-    const total = rows.length;
-    const emailed = rows.filter((r) => r.touches.some((t) => t.canal === 'E-mail' && (t.state === 'enviado' || t.state === 'bounce'))).length;
-    const bounced = rows.filter((r) => r.touches.some((t) => t.state === 'bounce')).length;
-    const replied = rows.filter((r) => r.respondeu).length;
-    const typeOf = (r: PilotLoteRow) => r.replyType ?? r.replyTypeSuggested;
-    const positive = rows.filter((r) => typeOf(r) === 'positiva').length;
-    const consented = rows.filter((r) => r.respondeu && r.autorizacao === 'sim').length;
-    const optOuts = rows.filter((r) => typeOf(r) === 'descadastro').length;
-    const qualified = rows.filter((r) => r.qualificada).length;
-    const waTouches = rows.flatMap((r) => r.touches.filter((t) => t.canal === 'WhatsApp' && ['enviado', 'entregue', 'lido', 'barrado'].includes(t.state)));
-    const waDelivered = waTouches.filter((t) => t.state === 'entregue' || t.state === 'lido').length;
-
-    const indicators: PilotIndicator[] = [
-      { label: 'Bounce', value: pct(bounced, emailed), detail: `${bounced} de ${emailed} com e-mail enviado`, reference: 'Abaixo de 3%', alert: emailed > 0 && bounced / emailed > 0.03 },
-      { label: 'Resposta total', value: pct(replied, total), detail: `${replied} de ${total}`, reference: 'Mercado: 3 a 8% (varia por setor)', alert: false },
-      { label: 'Resposta positiva', value: pct(positive, total), detail: `${positive} de ${total}`, reference: 'Costuma ficar entre 1 e 3%', alert: false },
-      { label: 'Autorização entre quem respondeu', value: pct(consented, replied), detail: `${consented} de ${replied}`, reference: 'Sem referência: medir no lote 1', alert: false },
-      { label: 'Descadastro ou reclamação', value: pct(optOuts, total), detail: `${optOuts} de ${total}`, reference: 'Abaixo de 1 a 2% (acima disso, pare o lote)', alert: total > 0 && optOuts / total > 0.02 },
-      { label: 'Reunião qualificada por 100 contatos', value: total > 0 ? ((qualified / total) * 100).toFixed(1).replace('.', ',') : '—', detail: `${qualified} reunião(ões) qualificada(s)`, reference: 'Meta definida após o lote 1', alert: false },
-      { label: 'WhatsApp entregue', value: pct(waDelivered, waTouches.length), detail: `${waDelivered} de ${waTouches.length} toques`, reference: 'Barrados pela Meta ganham uma nova tentativa', alert: false },
-    ];
-
-    return { rows, indicators };
+    return { rows, lotes };
   },
 
   // Dashboard da campanha: o lote + a conversa de cada lead (para abrir no chat),

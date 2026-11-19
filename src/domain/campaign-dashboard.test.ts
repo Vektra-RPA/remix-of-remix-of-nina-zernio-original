@@ -36,6 +36,8 @@ const row = (patch: Partial<PilotLoteRow>): PilotLoteRow => ({
   bounced: false,
   respondeuEm: null,
   canalResposta: null,
+  lote: 1,
+  loteInicio: null,
   ...patch,
 });
 
@@ -48,6 +50,20 @@ describe('campaign dashboard', () => {
     expect(bucketOf(touch(3, 'E-mail', 'cancelado'))).toBe('pulado');
   });
 
+  it('separa quem deveria receber o WhatsApp mas ficou sem por falta do template', () => {
+    const semTemplate = { ...touch(4, 'WhatsApp', 'pulado'), detail: 'whatsapp não configurado (template Meta pendente)' };
+    const d3NaoChegou = { ...touch(4, 'WhatsApp', 'pulado'), detail: 'WhatsApp anterior (step 2) não foi entregue (failed 131049)' };
+    expect(bucketOf(semTemplate)).toBe('sem_template');
+    expect(bucketOf(d3NaoChegou)).toBe('pulado');
+
+    const [d9] = buildCadence([
+      row({ contactId: 'a', touches: [semTemplate] }),
+      row({ contactId: 'b', touches: [d3NaoChegou] }),
+    ]);
+    expect(d9.buckets.sem_template).toEqual(['a']);
+    expect(d9.buckets.pulado).toEqual(['b']);
+  });
+
   it('põe cada lead em uma só situação, com o motivo de saída', () => {
     expect(situacaoOf(row({ optOut: true, optOutReason: 'sem interesse', respondeu: true })))
       .toEqual({ situacao: 'saiu', detalhe: 'sem interesse' });
@@ -55,7 +71,7 @@ describe('campaign dashboard', () => {
     expect(situacaoOf(row({ respondeu: true, canalResposta: 'whatsapp' })).detalhe).toMatch(/^Respondeu pelo WhatsApp/);
     expect(situacaoOf(row({ reuniao: '05/11 10:00', optOut: false })).situacao).toBe('reuniao');
     expect(situacaoOf(row({ touches: [touch(1, 'E-mail', 'enviado'), touch(3, 'E-mail', 'pendente', '2026-11-03T12:00:00Z')] })))
-      .toEqual({ situacao: 'em_cadencia', detalhe: 'Próximo: D6 · E-mail em 03/11' });
+      .toEqual({ situacao: 'em_cadencia', detalhe: 'Próximo: D7 · E-mail em 03/11' });
     expect(situacaoOf(row({ touches: [touch(1, 'E-mail', 'enviado')] })).situacao).toBe('concluiu');
   });
 

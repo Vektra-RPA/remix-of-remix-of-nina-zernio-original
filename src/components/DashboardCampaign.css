@@ -192,6 +192,14 @@
 .dash-sit--saiu,
 .dash-b--barrado { background: var(--via-danger); }
 .dash-b--pendente { background: var(--via-navy-12); }
+/* Seletor de lote no cabeçalho (mesmo visual do seletor de período). */
+.dash-lotes {
+  margin-top: var(--via-space-3);
+  flex-wrap: wrap;
+}
+
+/* Apto a receber: azul claro neutro (não é alerta nem erro). */
+.dash-b--sem_template { background: var(--via-chart-4); }
 .dash-b--pulado {
   background: repeating-linear-gradient(135deg, var(--via-navy-20) 0 3px, var(--via-navy-06) 3px 6px);
 }
@@ -606,6 +614,11 @@
 .dash-touch.dash-b--pendente,
 .dash-touch.dash-b--pulado {
   color: var(--via-text-body);
+}
+
+/* Fundo azul claro nos dois temas: texto navy fixo para manter o contraste. */
+.dash-touch.dash-b--sem_template {
+  color: #1B2A38;
 }
 
 @media (max-width: 1180px) {

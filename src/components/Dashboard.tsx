@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Send,
   SkipForward,
+  UserCheck,
   Users,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -35,6 +36,7 @@ import {
   type LeadView,
   type Situacao,
 } from '../domain/campaign-dashboard';
+import { latestLote } from '../domain/lotes';
 import { LeadListSheet, type LeadDrill } from './LeadListSheet';
 import { OnboardingBanner } from './OnboardingBanner';
 import { SystemHealthCard } from './SystemHealthCard';
@@ -55,6 +57,7 @@ const BUCKET_ICON: Record<CadenceBucket, React.ElementType> = {
   aguardando: Send,
   barrado: Ban,
   pendente: Clock,
+  sem_template: UserCheck,
   pulado: SkipForward,
 };
 
@@ -87,6 +90,7 @@ const Dashboard: React.FC = () => {
   const [drill, setDrill] = useState<LeadDrill | null>(null);
   const [showOutside, setShowOutside] = useState(false);
   const [readout, setReadout] = useState<Record<string, string>>({});
+  const [loteSel, setLoteSel] = useState<number | null>(null);
   const { setShowOnboarding } = useOutletContext<OutletContext>();
 
   const load = useCallback(async () => {
@@ -103,7 +107,13 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const rows = data?.lote.rows ?? [];
+  // Um lote por vez (o mais recente por padrão): cada lote tem a sua sequência de toques.
+  const lotes = useMemo(() => data?.lote.lotes ?? [], [data]);
+  const loteAtual = loteSel ?? latestLote(lotes);
+  const rows = useMemo(
+    () => (data?.lote.rows ?? []).filter((r) => loteAtual === null || r.lote === loteAtual),
+    [data, loteAtual],
+  );
   const views = useMemo(() => toViews(rows), [rows]);
   const viewOf = useMemo(() => new Map(views.map((v) => [v.row.contactId, v])), [views]);
   const bySituacao = useMemo(() => groupBySituacao(views), [views]);
@@ -199,10 +209,26 @@ const Dashboard: React.FC = () => {
             <p className="via-eyebrow">Prospecção da Lis</p>
             <h1>Visão geral da campanha.</h1>
             <p>
+              {lotes.length > 1 && loteAtual !== null ? `Lote ${loteAtual}: ` : ''}
               {total} leads no lote
               {loadedAt ? ` · atualizado às ${loadedAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : ''}
               . Clique em qualquer número para ver quem está por trás dele.
             </p>
+            {lotes.length > 1 && (
+              <div className="dashboard-period dash-lotes" role="group" aria-label="Escolher o lote">
+                {lotes.map((l) => (
+                  <button
+                    key={l.numero}
+                    type="button"
+                    onClick={() => setLoteSel(l.numero)}
+                    aria-pressed={l.numero === loteAtual}
+                    className={l.numero === loteAtual ? 'is-active' : undefined}
+                  >
+                    Lote {l.numero} · {fmtDay(l.inicio)} · {l.total} leads
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <button type="button" className="dash-refresh" onClick={load} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
@@ -347,12 +373,14 @@ const Dashboard: React.FC = () => {
                   const delivered = step.buckets.entregue.length;
                   const dispatched = delivered + step.buckets.aguardando.length + step.buckets.barrado.length;
                   const skipped = step.buckets.pulado.length;
+                  const missingTemplate = step.buckets.sem_template.length;
                   const summary = [
                     dispatched > 0 ? `${delivered} entregue${delivered === 1 ? '' : 's'}` : null,
                     step.buckets.aguardando.length > 0 ? `${step.buckets.aguardando.length} sem confirmação` : null,
                     step.canal === 'WhatsApp' && step.lidos > 0 ? `${step.lidos} lido${step.lidos === 1 ? '' : 's'}` : null,
                     step.buckets.barrado.length > 0 ? `${step.buckets.barrado.length} barrado${step.buckets.barrado.length === 1 ? '' : 's'}` : null,
                     step.proximo ? `${step.buckets.pendente.length} agendado${step.buckets.pendente.length === 1 ? '' : 's'} a partir de ${fmtDay(step.proximo)}` : null,
+                    missingTemplate > 0 ? `${missingTemplate} apto${missingTemplate === 1 ? '' : 's'} a receber` : null,
                     skipped > 0 ? `${skipped} pulado${skipped === 1 ? '' : 's'} ou cancelado${skipped === 1 ? '' : 's'}` : null,
                   ].filter(Boolean).join(' · ');
                   return (

@@ -8,18 +8,16 @@ import { Badge } from '@/components/ui/badge';
 import { LeadListSheet, type LeadDrill } from '@/components/LeadListSheet';
 import { toast } from 'sonner';
 import {
-  pilotApi, LOSS_REASONS, REPLY_TYPE_LABEL,
+  pilotApi, buildLoteIndicators, LOSS_REASONS, REPLY_TYPE_LABEL,
   type PilotCampaign, type PilotLoteRow, type PilotOverview, type PilotTouch, type ReplyType,
 } from '@/services/pilot';
 import {
-  SITUACAO_LABEL, SITUACAO_ORDER, buildFunnel, groupBySituacao, toViews, type LeadView, type Situacao,
+  SITUACAO_LABEL, SITUACAO_ORDER, buildFunnel, fmtDay, groupBySituacao, toViews, touchDay, type LeadView, type Situacao,
 } from '@/domain/campaign-dashboard';
+import { latestLote } from '@/domain/lotes';
 
 const fmtDate = (iso: string | null): string =>
   iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
-
-// Dia do playbook de cada toque da cadência (Passo 4).
-const TOUCH_DAY: Record<number, string> = { 1: 'D0', 2: 'D3', 3: 'D6', 4: 'D9', 5: 'D13' };
 
 const TOUCH_STYLE: Record<PilotTouch['state'], string> = {
   pendente: 'text-muted-foreground border-border',
@@ -32,8 +30,9 @@ const TOUCH_STYLE: Record<PilotTouch['state'], string> = {
   cancelado: 'text-muted-foreground border-dashed border-border line-through',
 };
 
-const touchTitle = (t: PilotTouch): string =>
-  [`${TOUCH_DAY[t.step] ?? `Step ${t.step}`} · ${t.canal}: ${t.state}`, t.at ? fmtDate(t.at) : null, t.detail]
+// Dia do playbook de cada toque (Passo 4), conforme a sequência do lote do lead.
+const touchTitle = (t: PilotTouch, loteInicio: string | null): string =>
+  [`${touchDay(t.step, loteInicio)} · ${t.canal}: ${t.state}`, t.at ? fmtDate(t.at) : null, t.detail]
     .filter(Boolean).join(' — ');
 
 const selectClass = 'w-full min-w-[9rem] rounded-lg border border-border bg-background p-1.5 text-xs';
@@ -55,6 +54,7 @@ const Pilot: React.FC = () => {
   const [drill, setDrill] = useState<LeadDrill | null>(null);
   const [filtro, setFiltro] = useState<'todos' | Situacao>('todos');
   const [busca, setBusca] = useState('');
+  const [loteSel, setLoteSel] = useState<number | null>(null);
   const escalationsRef = useRef<HTMLElement>(null);
   const lote = campaign?.lote ?? null;
 
@@ -108,8 +108,16 @@ const Pilot: React.FC = () => {
     .filter((r) => r.touches.some((t) => ['enviado', 'entregue', 'lido', 'barrado', 'bounce'].includes(t.state)))
     .map((r) => r.contactId);
   const escaladas = data?.funnel.escaladas ?? 0;
+  // Seção do lote: os cards do topo somam a campanha; aqui é um lote por vez (o mais
+  // recente por padrão), com os indicadores e os dias da sequência daquele lote.
+  const lotes = lote?.lotes ?? [];
+  const loteAtual = loteSel ?? latestLote(lotes);
+  const loteInfo = lotes.find((l) => l.numero === loteAtual) ?? null;
+  const loteRows = loteAtual === null ? rows : rows.filter((r) => r.lote === loteAtual);
+  const loteBySituacao = groupBySituacao(views.filter((v) => loteAtual === null || v.row.lote === loteAtual));
+  const indicators = buildLoteIndicators(loteRows);
   const termo = busca.trim().toLocaleLowerCase('pt-BR');
-  const filteredRows = rows.filter((r) =>
+  const filteredRows = loteRows.filter((r) =>
     (filtro === 'todos' || viewOf.get(r.contactId)?.situacao === filtro)
     && (!termo || `${r.nome} ${r.empresa} ${r.cargo}`.toLocaleLowerCase('pt-BR').includes(termo)));
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -251,20 +259,43 @@ const Pilot: React.FC = () => {
           </div>
         </section>
 
-        {/* Lote atual (Passos 7.3 e 7.4): números e uma linha por contato */}
+        {/* Lote (Passos 7.3 e 7.4): números e uma linha por contato, um lote por vez */}
         <section className="mb-8">
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-lg font-semibold">Lote atual</h2>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <h2 className="text-lg font-semibold">
+              {loteInfo ? `Lote ${loteInfo.numero}` : 'Lote atual'}
+              {loteInfo && <span className="ml-2 text-sm font-normal text-muted-foreground">desde {fmtDay(loteInfo.inicio)}</span>}
+            </h2>
             {lote && (
               <Badge variant="secondary">
-                {filteredRows.length === lote.rows.length ? `${lote.rows.length} leads` : `${filteredRows.length} de ${lote.rows.length} leads`}
+                {filteredRows.length === loteRows.length ? `${loteRows.length} leads` : `${filteredRows.length} de ${loteRows.length} leads`}
               </Badge>
+            )}
+            {lotes.length > 1 && (
+              <div className="ml-auto flex flex-wrap gap-1" role="group" aria-label="Escolher o lote">
+                {lotes.map((l) => {
+                  const active = l.numero === loteAtual;
+                  return (
+                    <button
+                      key={l.numero}
+                      type="button"
+                      onClick={() => { setLoteSel(l.numero); setFiltro('todos'); }}
+                      aria-pressed={active}
+                      className={`rounded-full border px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        active ? 'border-foreground bg-foreground text-background' : 'border-border hover:bg-muted/50'
+                      }`}
+                    >
+                      Lote {l.numero} · {fmtDay(l.inicio)} <span className="tabular-nums opacity-70">{l.total}</span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
 
           {lote && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-              {lote.indicators.map((ind) => (
+              {indicators.map((ind) => (
                 <div key={ind.label} className={`rounded-xl border p-4 ${ind.alert ? 'border-red-500/50 bg-red-500/5' : 'border-border'}`}>
                   <p className="text-xs text-muted-foreground">{ind.label}</p>
                   <p className="text-2xl font-semibold mt-1">{ind.value}</p>
@@ -275,16 +306,16 @@ const Pilot: React.FC = () => {
             </div>
           )}
 
-          {lote && lote.rows.length === 0 && (
+          {lote && loteRows.length === 0 && (
             <div className="rounded-xl border border-dashed border-border p-8 text-center">
               <p className="text-sm text-muted-foreground">Nenhum contato em cadência ainda.</p>
             </div>
           )}
 
-          {lote && lote.rows.length > 0 && (
+          {lote && loteRows.length > 0 && (
             <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar leads do lote">
               {(['todos', ...SITUACAO_ORDER] as const).map((key) => {
-                const count = key === 'todos' ? rows.length : bySituacao[key].length;
+                const count = key === 'todos' ? loteRows.length : loteBySituacao[key].length;
                 const active = filtro === key;
                 return (
                   <button
@@ -315,7 +346,7 @@ const Pilot: React.FC = () => {
             </div>
           )}
 
-          {lote && lote.rows.length > 0 && filteredRows.length === 0 && (
+          {lote && loteRows.length > 0 && filteredRows.length === 0 && (
             <div className="rounded-xl border border-dashed border-border p-6 text-center">
               <p className="text-sm text-muted-foreground">Nenhum lead com esse filtro.</p>
             </div>
@@ -368,10 +399,10 @@ const Pilot: React.FC = () => {
                           {row.touches.map((t) => (
                             <span
                               key={t.step}
-                              title={touchTitle(t)}
+                              title={touchTitle(t, row.loteInicio)}
                               className={`rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${TOUCH_STYLE[t.state]}`}
                             >
-                              {TOUCH_DAY[t.step] ?? t.step}
+                              {touchDay(t.step, row.loteInicio)}
                             </span>
                           ))}
                         </div>

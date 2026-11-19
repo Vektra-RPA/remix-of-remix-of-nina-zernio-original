@@ -7,9 +7,9 @@ import {
   BUCKET_LABEL,
   SITUACAO_LABEL,
   SITUACAO_ORDER,
-  TOUCH_DAY,
   bucketOf,
   fmtDay,
+  touchDay,
   type LeadView,
 } from '../domain/campaign-dashboard';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet';
@@ -85,13 +85,14 @@ export const LeadListSheet: React.FC<LeadListSheetProps> = ({ drill, viewOf, con
                 <div className="dash-touches" aria-label="Toques da cadência">
                   {v.row.touches.map((t) => {
                     const bucket = bucketOf(t);
+                    const dia = touchDay(t.step, v.row.loteInicio);
                     return (
                       <span
                         key={t.step}
                         className={`dash-touch dash-b--${bucket}`}
-                        title={[`${TOUCH_DAY[t.step] ?? t.step} · ${t.canal}: ${BUCKET_LABEL[bucket].toLowerCase()}`, t.at ? fmtDay(t.at) : null, t.detail].filter(Boolean).join(' — ')}
+                        title={[`${dia} · ${t.canal}: ${BUCKET_LABEL[bucket].toLowerCase()}`, t.at ? fmtDay(t.at) : null, t.detail].filter(Boolean).join(' — ')}
                       >
-                        {TOUCH_DAY[t.step] ?? t.step}
+                        {dia}
                       </span>
                     );
                   })}

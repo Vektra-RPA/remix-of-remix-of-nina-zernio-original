@@ -1,4 +1,5 @@
 import type { PilotCampaignReply, PilotLoteRow, PilotTouch } from '../services/pilot';
+import { touchDay } from './lotes';
 
 // Agregações do Dashboard da campanha. Tudo conta pessoas do lote (contatos com
 // cadência), nunca conversas: cada lead tem uma conversa por canal, e contar
@@ -16,20 +17,28 @@ export const SITUACAO_LABEL: Record<Situacao, string> = {
   saiu: 'Saiu da lista',
 };
 
-export type CadenceBucket = 'entregue' | 'aguardando' | 'barrado' | 'pendente' | 'pulado';
+// 'sem_template': o lead estava apto ao toque de WhatsApp, mas o worker pulou porque o
+// template Meta daquele passo não está configurado (hoje, o D9). Fica separado de
+// 'pulado' para o painel mostrar quem está apto a receber o toque.
+export type CadenceBucket = 'entregue' | 'aguardando' | 'barrado' | 'pendente' | 'sem_template' | 'pulado';
 
-export const BUCKET_ORDER: CadenceBucket[] = ['entregue', 'aguardando', 'barrado', 'pendente', 'pulado'];
+export const BUCKET_ORDER: CadenceBucket[] = ['entregue', 'aguardando', 'barrado', 'pendente', 'sem_template', 'pulado'];
 
 export const BUCKET_LABEL: Record<CadenceBucket, string> = {
   entregue: 'Entregue',
   aguardando: 'Enviado, sem confirmação',
   barrado: 'Barrado ou e-mail inválido',
   pendente: 'Agendado',
+  sem_template: 'Apto a receber',
   pulado: 'Pulado ou cancelado',
 };
 
-// Dia do playbook de cada toque da cadência (Passo 4).
-export const TOUCH_DAY: Record<number, string> = { 1: 'D0', 2: 'D3', 3: 'D6', 4: 'D9', 5: 'D13' };
+// Motivo gravado pelo cadence-worker quando falta o template Meta do passo:
+// "whatsapp não configurado (template Meta pendente)".
+const MISSING_TEMPLATE = /template meta pendente/i;
+
+// O dia de cada toque (D0, D3...) depende da sequência que o lote seguiu: ver ./lotes.
+export { touchDay };
 
 const TZ = 'America/Sao_Paulo';
 const NEGATIVE = new Set(['negativa', 'descadastro']);
@@ -53,6 +62,8 @@ export function bucketOf(touch: PilotTouch): CadenceBucket {
       return 'barrado';
     case 'pendente':
       return 'pendente';
+    case 'pulado':
+      return touch.detail && MISSING_TEMPLATE.test(touch.detail) ? 'sem_template' : 'pulado';
     default:
       return 'pulado';
   }
@@ -84,7 +95,7 @@ export function situacaoOf(row: PilotLoteRow): Pick<LeadView, 'situacao' | 'deta
   if (next) {
     return {
       situacao: 'em_cadencia',
-      detalhe: `Próximo: ${TOUCH_DAY[next.step] ?? `passo ${next.step}`} · ${next.canal}${next.at ? ` em ${fmtDay(next.at)}` : ''}`,
+      detalhe: `Próximo: ${touchDay(next.step, row.loteInicio)} · ${next.canal}${next.at ? ` em ${fmtDay(next.at)}` : ''}`,
     };
   }
   return { situacao: 'concluiu', detalhe: row.lossReason ?? 'Cadência concluída sem resposta' };
@@ -131,14 +142,16 @@ export function buildCadence(rows: PilotLoteRow[]): CadenceStepView[] {
   const byStep = new Map<number, CadenceStepView>();
   for (const row of rows) {
     for (const touch of row.touches) {
+      const dia = touchDay(touch.step, row.loteInicio);
       let view = byStep.get(touch.step);
+      if (view && view.dia !== dia) view.dia = `Passo ${touch.step}`; // lotes com sequências diferentes
       if (!view) {
         view = {
           step: touch.step,
-          dia: TOUCH_DAY[touch.step] ?? `Passo ${touch.step}`,
+          dia,
           canal: touch.canal,
           total: 0,
-          buckets: { entregue: [], aguardando: [], barrado: [], pendente: [], pulado: [] },
+          buckets: { entregue: [], aguardando: [], barrado: [], pendente: [], sem_template: [], pulado: [] },
           lidos: 0,
           proximo: null,
         };
