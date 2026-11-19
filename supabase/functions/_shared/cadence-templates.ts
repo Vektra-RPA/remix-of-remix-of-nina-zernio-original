@@ -44,14 +44,15 @@ const SUBJECT: Record<CadencePersona, string> = {
 };
 
 /** Tema do toque de WhatsApp ({{2}} do template) e do e-mail de encerramento. */
-const TEMA: Record<CadencePersona, { tema: string; temaCurto: string }> = {
-  P1: { tema: 'as aprovações de compra e pagamento na {empresa}', temaCurto: 'as aprovações' },
-  P3: { tema: 'o fechamento do mês na {empresa}', temaCurto: 'o fechamento' },
+// virar: verbo do encerramento concordando com o tema curto ("as aprovações virarem").
+const TEMA: Record<CadencePersona, { tema: string; temaCurto: string; virar: string }> = {
+  P1: { tema: 'as aprovações de compra e pagamento na {empresa}', temaCurto: 'as aprovações', virar: 'virarem' },
+  P3: { tema: 'o fechamento do mês na {empresa}', temaCurto: 'o fechamento', virar: 'virar' },
 };
 
 const BREAKUP =
   '{nome}, não vou insistir.\n\n' +
-  'Se {tema_curto} virar prioridade na {empresa}, é só responder este e-mail. Chega direto em mim.\n\n' +
+  'Se {tema_curto} {virar} prioridade na {empresa}, é só responder este e-mail. Chega direto em mim.\n\n' +
   'Abraço,\n' +
   'Fabiano';
 
@@ -126,6 +127,7 @@ function render(text: string, persona: CadencePersona, vars: Vars): string {
   const t = TEMA[persona];
   return text
     .replaceAll('{tema_curto}', t.temaCurto)
+    .replaceAll('{virar}', t.virar)
     .replaceAll('{tema}', t.tema)
     .replaceAll('{nome}', vars.nome)
     .replaceAll('{empresa}', vars.empresa);

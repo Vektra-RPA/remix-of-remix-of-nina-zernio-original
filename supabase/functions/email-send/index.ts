@@ -25,6 +25,13 @@ const corsHeaders = {
 type SupabaseClient = any;
 
 const RESEND_API = 'https://api.resend.com/emails';
+
+/** References do follow-up: os IDs anteriores, sem repetir, terminando no In-Reply-To. */
+function mergeReferences(references: string | null, inReplyTo: string): string {
+  const ids = (references ?? '').split(/\s+/).filter(Boolean);
+  if (!ids.includes(inReplyTo)) ids.push(inReplyTo);
+  return [...new Set(ids)].join(' ');
+}
 const RATE_MAX_HOUR = Number(Deno.env.get('EMAIL_RATE_MAX_HOUR') ?? '15');
 const RATE_MAX_MINUTE = Number(Deno.env.get('EMAIL_RATE_MAX_MINUTE') ?? '3');
 const MAX_RETRIES = 2;
@@ -224,15 +231,20 @@ serve(async (req) => {
       ? (!footer || html.includes(unsub) ? html : `${html}\n<p style="color:#8a94a6;font-size:12px">—<br>${escapeHtml(unsub)}</p>`)
       : null;
 
-    // Threading: Message-ID próprio (controlado por nós) para os steps da cadência
-    // poderem encadear uns nos outros, além de manter o fio quando o lead responde.
-    // O Resend geraria um Message-ID, mas não o devolve — por isso definimos o nosso.
+    // Threading: geramos um ID próprio para os steps da cadência encadearem uns nos outros.
+    // O SES (por trás do Resend) troca o Message-ID pelo dele na entrega, então esse ID não
+    // chega ao lead como Message-ID e o In-Reply-To dos follow-ups aponta para um e-mail que
+    // ele não tem (teste interno de 19/11: D0 num fio, D7 e D14 em outro). O Gmail também
+    // agrupa por References em comum, então o 1º e-mail do fio (threadStart) leva o próprio
+    // ID em References como âncora, e os seguintes repetem a âncora.
     const domain = cfg.fromEmail.split('@')[1] || 'trajetoriaconsultoria.com.br';
     const rfcMessageId = `<${crypto.randomUUID()}@${domain}>`;
     const headers: Record<string, string> = { 'Message-ID': rfcMessageId };
     if (inReplyTo) {
       headers['In-Reply-To'] = inReplyTo;
-      headers['References'] = references ? `${references} ${inReplyTo}`.trim() : inReplyTo;
+      headers['References'] = mergeReferences(references, inReplyTo);
+    } else if (body.threadStart === true) {
+      headers['References'] = rfcMessageId;
     }
 
     const result = await sendViaResend(cfg, { to, subject, text: finalText, html: finalHtml, headers, from });

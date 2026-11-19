@@ -335,7 +335,7 @@ async function sendThreadedEmail(
 
   const res = await callEmailSend({
     to: contact.email, subject: email.subject, text: email.text, html: email.html, conversationId, inReplyTo, references,
-    fromName: CADENCE_FROM_NAME, footer: false,
+    fromName: CADENCE_FROM_NAME, footer: false, threadStart: !inReplyTo,
   });
   if (res.ok && (res.rfcMessageId || Object.keys(memoryPatch).length > 0)) {
     const thread = res.rfcMessageId
