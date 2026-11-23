@@ -18,7 +18,7 @@ const corsHeaders = {
 
 const MAX_EXECUTION_MS = 110_000;
 const MAX_PAGES = 12;
-const PER_PAGE = 25;
+const PER_PAGE = 100; // máximo da Apollo; com 25 a busca parava nos 300 primeiros (lote 2, 22/11)
 const LOCK_SECONDS = 600;
 
 function json(status: number, body: Record<string, unknown>): Response {
