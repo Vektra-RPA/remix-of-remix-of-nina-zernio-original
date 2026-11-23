@@ -5,7 +5,7 @@
  */
 
 import { derivePersona, type Persona } from './lead-identity.ts';
-import { emailMatchesName } from './exclusions.ts';
+import { emailMatchesName, isGenericEmail } from './exclusions.ts';
 
 const GATEWAY_URL = 'https://connector-gateway.lovable.dev/apollo';
 const APOLLO_DIRECT_URL = 'https://api.apollo.io';
@@ -229,7 +229,16 @@ const INDUSTRY_ALLOW = [
 // Nome de empresa que denuncia comércio/serviço mesmo com setor de indústria na Apollo.
 const NON_INDUSTRY_NAME = /\b(distribuidora|atacad\w*|farmacia|drogaria|construtora|transportes?|logistica|faculdade|universidade|escola|software|consultoria|advocacia|contabilidade|imobiliaria|locadora|locacao)\b/;
 // Indício de multinacional: subsidiária "do Brasil"/"Brasil" no nome ou domínio de outro país.
-const MULTINATIONAL_NAME = /\b(do brasil|brasil ltda|brasil s\.?a|brazil)\b|\bbrasil$/;
+const MULTINATIONAL_NAME = /\b(do brasil|brasil ltda|brasil s\.?a|brazil|latin america|latam|america latina)\b|\bbrasil$/;
+// Revisão do lote 2 (22/11): o setor da Apollo deixava passar serviço, engenharia e revenda
+// (30 de 87 aprovados caíram na revisão humana). Só vale quando o nome não diz "Indústria".
+const SERVICE_NAME = /\b(engenharia|manutencao|servicos|instalacoes|montagens?|representac\w*|distribuidor\w*|revenda|importadora|associacao|sindicato|delivery)\b/;
+// Descrição/palavras-chave: quem fabrica diz que fabrica; sem isso, revenda e serviço ficam de fora.
+const MAKER_TEXT = /\b(fabrica|fabricas|fabricamos|fabricante|fabricantes|fabricacao|fabricados|fabricadas|fabril|factory|produz|produzimos|producao|production|producer|produces|producing|manufacturer|manufacturers|manufactures|manufactured|industria|industrias|usinagem|fundicao|estamparia|extrusao|injecao)\b/;
+const RESALE_TEXT = /\b(distribuidor\w*|distributor\w*|distribution|revenda\w*|revendedor\w*|reseller\w*|dealer\w*|representante\w*|representac\w*|importador\w*)\b/;
+const SERVICE_TEXT = /\b(manutencao|maintenance|instalacao|instalacoes|installation|laudos?|engenharia de projetos|projetos de engenharia|consultoria|assessoria|locacao|rental|food service)\b/;
+// Controller só conta como diretor financeiro (P3) em nível de diretoria.
+const DIRECTOR_SENIORITY = ['owner', 'founder', 'c_suite', 'partner', 'vp', 'head', 'director'];
 const FOREIGN_TLD = /\.(it|de|fr|es|pt|jp|cn|uk|nl|ch|se|at|be|dk|fi|no|kr|in|mx|ar|cl|us)$/;
 
 function normText(value: unknown): string {
@@ -253,6 +262,17 @@ export function icpRejection(person: any): string | null {
   const industryOk = industryByName || INDUSTRY_ALLOW.includes(industry);
   if (!industryOk) return `Setor fora do ICP (${org.industry || 'sem setor'})`;
   if (NON_INDUSTRY_NAME.test(name)) return 'Empresa de comércio/serviço (pelo nome)';
+  if (/\b(associacao|sindicato|federacao|instituto)\b/.test(name)) return 'Associação ou entidade de classe';
+  if (!industryByName && SERVICE_NAME.test(name)) return 'Serviço, engenharia ou revenda (pelo nome)';
+  const desc = normText([org.short_description, org.seo_description, ...(Array.isArray(org.keywords) ? org.keywords : [])].join(' '));
+  if (!industryByName && !MAKER_TEXT.test(desc)) {
+    if (RESALE_TEXT.test(desc)) return 'Distribuidor ou revenda (pela descrição)';
+    if (SERVICE_TEXT.test(desc)) return 'Empresa de serviço (pela descrição)';
+  }
+  if (/\b(controller|controladoria)\b/.test(normText(person?.title))
+    && !DIRECTOR_SENIORITY.includes(normText(person?.seniority))) {
+    return 'Controller sem nível de diretoria';
+  }
 
   const country = normText(org.country);
   if (MULTINATIONAL_NAME.test(name) || FOREIGN_TLD.test(domain) || (country && country !== 'brazil' && country !== 'brasil')
@@ -261,6 +281,10 @@ export function icpRejection(person: any): string | null {
   }
 
   if (!person?.email) return 'Sem e-mail';
+  if (isGenericEmail(person.email)) return 'E-mail genérico (contato@, comercial@...)';
+  // Cadastro com o nome da empresa no lugar da pessoa (lote 2: "Fercorte Metalurgica").
+  const personWords = normText(person?.name).split(/\s+/).filter((w) => w.length > 2);
+  if (personWords.length > 0 && personWords.every((w) => name.includes(w))) return 'Contato com o nome da empresa, não da pessoa';
   if (String(person?.email_status ?? '').toLowerCase() !== 'verified') return 'E-mail não verificado na Apollo';
   if (!emailMatchesName(person.email, person.name ?? `${person.first_name ?? ''} ${person.last_name ?? ''}`)) {
     return 'E-mail não parece ser da pessoa';
