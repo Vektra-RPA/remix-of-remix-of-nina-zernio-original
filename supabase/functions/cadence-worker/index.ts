@@ -12,6 +12,7 @@ import {
 import { emailMatchesName, isExcludedEmail, isGenericEmail } from "../_shared/exclusions.ts";
 import { TAG_DOUBT, TAG_OUT, TAG_PENDING } from "../_shared/lead-triage.ts";
 import { buildDailyDigest } from "../_shared/daily-digest.ts";
+import { holidayToday } from "../_shared/holidays.ts";
 import { enqueueTemplateForContact, enqueueTemplateWithMessage } from "../_shared/template-dispatch.ts";
 import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 
@@ -799,6 +800,9 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
   // 2) Janela útil (só para os toques frios da cadência).
   if (!withinWindow()) return { skipped: 'fora da janela útil (9-17h, dia útil)', ...reminders };
   if (!isSendDay()) return { skipped: 'fora dos dias de envio do piloto (terça a quinta)', ...reminders };
+  // Feriado: nada de matrícula nem de toque frio; o que vencer hoje sai no próximo dia de envio.
+  const holiday = ignoreWindow() ? null : holidayToday();
+  if (holiday) return { skipped: `feriado: ${holiday}`, ...reminders };
   let sentToday = await emailsSentToday(supabase);
   let waToday = await whatsappSentToday(supabase);
   if (sentToday >= DAILY_EMAIL_MAX && waToday >= DAILY_WA_MAX && !isRetryWindow()) {
