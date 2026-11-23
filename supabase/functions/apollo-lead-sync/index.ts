@@ -4,11 +4,15 @@ import { getUserFromToken } from '../_shared/auth.ts';
 import { ApolloError, extractPhone, matchPerson, scoreLead, searchPeople } from '../_shared/apollo.ts';
 import { upsertUnifiedContact } from '../_shared/lead-identity.ts';
 import { isExcludedDomain, isExcludedEmail } from '../_shared/exclusions.ts';
+import { TAG_DOUBT, TAG_OUT, TAG_PENDING, triageBatch, type TriageLead } from '../_shared/lead-triage.ts';
 
 /**
  * Captação semanal de leads na Apollo.
  * Busca -> descarta repetidos -> enriquece -> grava lead -> cria contato no CRM
+ * -> triagem (Claude: OK / DÚVIDA / FORA; só OK entra na cadência)
  * -> monta a campanha de disparo da semana com o template aprovado configurado.
+ *
+ * Ação {"action":"triagem"}: só a triagem dos contatos pendentes (cron a cada 5 min).
  */
 
 const corsHeaders = {
@@ -26,6 +30,116 @@ function json(status: number, body: Record<string, unknown>): Response {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+// deno-lint-ignore no-explicit-any
+type Service = any;
+
+const TRIAGE_BATCH = 8;      // leads por chamada ao modelo
+const TRIAGE_PARALLEL = 4;   // chamadas em paralelo por rodada
+const TRIAGE_MAX_ATTEMPTS = 3;
+const ROUND_MS = 32_000;     // tempo reservado para uma rodada
+const CRON_TRIAGE_MS = 45_000; // a ação "triagem" (cron) encerra antes dos 60 s do pg_net
+
+function rec(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+}
+
+/**
+ * Marca o contato para triagem, a não ser que ele já esteja na cadência ou já tenha
+ * passado pela triagem. Contato novo já nasce com a tag (newContactTags), sem janela
+ * para a cadência matriculá-lo antes; aqui cobre o contato que já existia.
+ */
+async function markPendingTriage(service: Service, contactId: string): Promise<void> {
+  const { data: enrolled } = await service.from('cadence_state').select('id').eq('contact_id', contactId).limit(1);
+  if (Array.isArray(enrolled) && enrolled.length) return;
+  const { data: c } = await service.from('contacts').select('tags, client_memory').eq('id', contactId).maybeSingle();
+  const tags: string[] = Array.isArray(c?.tags) ? c.tags : [];
+  if (tags.includes(TAG_PENDING) || tags.includes(TAG_DOUBT) || tags.includes(TAG_OUT) || rec(rec(c?.client_memory).triagem).veredito) return;
+  await service.from('contacts').update({ tags: [...tags, TAG_PENDING] }).eq('id', contactId);
+}
+
+/**
+ * Triagem dos contatos marcados com triagem_pendente, em lotes, até o tempo acabar.
+ * OK: sai a tag pendente e o contato fica livre para a cadência. DÚVIDA: fica parado
+ * (tag triagem_duvida) até uma pessoa decidir. FORA: perde a tag 'apollo' e o lead é
+ * desqualificado. Erro do provedor encerra a rodada (o cron tenta de novo); lead que o
+ * modelo não devolveu tenta de novo e, depois de 3 tentativas, vira DÚVIDA.
+ */
+async function runTriage(service: Service, deadline: number): Promise<Record<string, number | string>> {
+  const stats: Record<string, number | string> = { avaliados: 0, ok: 0, duvida: 0, fora: 0 };
+  // Uma rodada (até 4 lotes de 8 em paralelo) leva ~20-30 s; só começa outra se ainda
+  // couber antes do prazo (o cron do pg_net desiste da chamada em 60 s).
+  while (deadline - Date.now() > ROUND_MS) {
+    const { data: contacts } = await service
+      .from('contacts').select('id, tags, client_memory').contains('tags', [TAG_PENDING]).limit(TRIAGE_BATCH * TRIAGE_PARALLEL);
+    const rows = (contacts ?? []) as Array<{ id: string; tags: string[] | null; client_memory: Record<string, unknown> | null }>;
+    if (rows.length === 0) break;
+
+    const { data: leadRows } = await service
+      .from('apollo_leads')
+      .select('id, contact_id, full_name, title, seniority, email, company_name, company_domain, company_industry, company_employees, company_city, company_state, city, state, raw, created_at')
+      .in('contact_id', rows.map((r) => r.id))
+      .order('created_at', { ascending: false });
+    const leadByContact = new Map<string, TriageLead & { contact_id: string }>();
+    for (const l of (leadRows ?? []) as Array<TriageLead & { contact_id: string }>) {
+      if (!leadByContact.has(l.contact_id)) leadByContact.set(l.contact_id, l);
+    }
+
+    const now = new Date().toISOString();
+    const apply = async (
+      contact: typeof rows[number], leadId: string | null,
+      veredito: 'OK' | 'DUVIDA' | 'FORA', persona: string | null, motivo: string,
+    ) => {
+      let tags = (contact.tags ?? []).filter((t) => t !== TAG_PENDING);
+      if (veredito === 'DUVIDA') tags = Array.from(new Set([...tags, TAG_DOUBT]));
+      if (veredito === 'FORA') tags = Array.from(new Set([...tags.filter((t) => t !== 'apollo'), TAG_OUT]));
+      const mem = rec(contact.client_memory);
+      await service.from('contacts').update({
+        tags,
+        client_memory: { ...mem, triagem: { veredito, persona, motivo, at: now } },
+      }).eq('id', contact.id);
+      if (veredito === 'FORA' && leadId) {
+        await service.from('apollo_leads').update({ status: 'disqualified', disqualify_reason: `Triagem: ${motivo}` }).eq('id', leadId);
+      }
+      stats.avaliados = Number(stats.avaliados) + 1;
+      const key = veredito === 'OK' ? 'ok' : veredito === 'DUVIDA' ? 'duvida' : 'fora';
+      stats[key] = Number(stats[key]) + 1;
+    };
+
+    // Contato sem lead do Apollo para ler: não há o que avaliar, uma pessoa decide.
+    for (const c of rows.filter((r) => !leadByContact.has(r.id))) {
+      await apply(c, null, 'DUVIDA', null, 'Sem dados do Apollo para a triagem automática');
+    }
+    const batch = rows.filter((r) => leadByContact.has(r.id));
+    if (batch.length === 0) continue;
+
+    const chunks: typeof batch[] = [];
+    for (let i = 0; i < batch.length; i += TRIAGE_BATCH) chunks.push(batch.slice(i, i + TRIAGE_BATCH));
+    const settled = await Promise.allSettled(chunks.map((ch) => triageBatch(ch.map((c) => leadByContact.get(c.id)!))));
+    const failed = settled.filter((s) => s.status === 'rejected') as PromiseRejectedResult[];
+    if (failed.length) {
+      stats.erro = String(failed[0].reason instanceof Error ? failed[0].reason.message : failed[0].reason);
+      console.error('[apollo-lead-sync] triagem falhou:', stats.erro);
+    }
+    const byLead = new Map(settled.flatMap((s) => s.status === 'fulfilled' ? s.value : []).map((r) => [r.id, r]));
+    // Só os lotes que voltaram contam tentativa; lote com erro do provedor tenta de novo depois.
+    const answered = chunks.filter((_, i) => settled[i].status === 'fulfilled').flat();
+    for (const c of answered) {
+      const lead = leadByContact.get(c.id)!;
+      const r = byLead.get(lead.id);
+      if (r) { await apply(c, lead.id, r.veredito, r.persona, r.motivo); continue; }
+      const mem = rec(c.client_memory);
+      const attempts = Number(mem.triagem_tentativas ?? 0) + 1;
+      if (attempts >= TRIAGE_MAX_ATTEMPTS) {
+        await apply(c, lead.id, 'DUVIDA', null, 'Triagem automática não concluiu');
+      } else {
+        await service.from('contacts').update({ client_memory: { ...mem, triagem_tentativas: attempts } }).eq('id', c.id);
+      }
+    }
+    if (failed.length) break; // provedor com erro: encerra e o cron tenta de novo
+  }
+  return stats;
 }
 
 serve(async (request) => {
@@ -56,6 +170,35 @@ serve(async (request) => {
       }
     }
     triggerSource = 'manual';
+  }
+
+  const reqBody = rec(await request.json().catch(() => ({})));
+
+  // Teste da triagem sem gravar nada: avalia leads já existentes (ids de apollo_leads),
+  // em lotes paralelos, e devolve os vereditos — para comparar com a revisão manual.
+  if (reqBody.action === 'triagem_teste') {
+    const ids = (Array.isArray(reqBody.leadIds) ? reqBody.leadIds : []).filter((x): x is string => typeof x === 'string').slice(0, 48);
+    if (ids.length === 0) return json(400, { error: 'Informe leadIds.' });
+    const { data: leadRows } = await service
+      .from('apollo_leads')
+      .select('id, full_name, title, seniority, email, company_name, company_domain, company_industry, company_employees, company_city, company_state, city, state, raw')
+      .in('id', ids);
+    const leads = (leadRows ?? []) as TriageLead[];
+    const batches: TriageLead[][] = [];
+    for (let i = 0; i < leads.length; i += TRIAGE_BATCH) batches.push(leads.slice(i, i + TRIAGE_BATCH));
+    const settled = await Promise.allSettled(batches.map((b) => triageBatch(b)));
+    const results = settled.flatMap((s) => s.status === 'fulfilled' ? s.value : []);
+    const errors = settled.filter((s) => s.status === 'rejected').map((s) => String((s as PromiseRejectedResult).reason));
+    return json(200, { success: true, pedidos: ids.length, avaliados: results.length, results, errors });
+  }
+
+  if (reqBody.action === 'triagem') {
+    try {
+      const triagem = await runTriage(service, startedAt + CRON_TRIAGE_MS);
+      return json(200, { success: true, triagem });
+    } catch (error) {
+      return json(500, { error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   let runId: string | null = null;
@@ -214,9 +357,11 @@ serve(async (request) => {
           scoreReasons: reasons,
           apolloPersonId: apolloId,
           origin: 'apollo',
+          newContactTags: [TAG_PENDING],
         });
         if (contactId) {
           await service.from('apollo_leads').update({ contact_id: contactId }).eq('id', leadId);
+          await markPendingTriage(service, contactId);
         }
       }
 
@@ -361,6 +506,10 @@ serve(async (request) => {
       finished_at: new Date().toISOString(),
     }).eq('id', runId);
 
+    // Triagem com o tempo que sobrou; o cron lis-apollo-triagem termina o resto.
+    const deadline = startedAt + MAX_EXECUTION_MS - 20_000;
+    const triagem = Date.now() < deadline ? await runTriage(service, deadline).catch((e) => ({ erro: String(e) })) : { adiada: 'sem tempo nesta rodada' };
+
     return json(200, {
       success: true,
       fetched,
@@ -368,6 +517,7 @@ serve(async (request) => {
       qualified: qualifiedCount,
       with_phone: withPhone,
       campaign_id: campaignId,
+      triagem,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

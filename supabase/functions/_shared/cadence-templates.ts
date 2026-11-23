@@ -31,10 +31,22 @@ export const ENABLED_STEPS = CADENCE_STEPS.filter((s) => s.enabled);
 /** Último toque da sequência: nada sai depois dele. */
 export const FINAL_STEP = Math.max(...ENABLED_STEPS.map((s) => s.step));
 
+// Assinatura em texto: vai na parte de texto puro do D0 (leitor sem HTML).
 const SIGNATURE =
   'Fabiano Souza\n' +
   'Sócio · Trajetória Consultoria · Curitiba\n' +
   'linkedin.com/in/fabiano-souza-';
+
+// Assinatura em imagem (cartão do Fabiano, 23/11/2026): vai no fim da parte HTML dos três
+// e-mails. No D0 ela substitui a assinatura em texto (o cartão já traz nome e cargo). A
+// imagem fica hospedada no site da Nina (public/email/); o texto alternativo aparece
+// quando o leitor bloqueia imagens (ex.: Outlook com remetente desconhecido).
+export const SIGNATURE_IMAGE_URL = 'https://nina-lis.vercel.app/email/assinatura-fabiano.jpg';
+const SIGNATURE_IMAGE_ALT =
+  'Fabiano Souza · CEO Trajetória Consultoria · +55 (41) 9 9106-5588 · Curitiba - PR · www.trajetoriaconsultoria.com.br';
+const SIGNATURE_MARK = '{assinatura}';
+// Perfil do Fabiano (o endereço termina mesmo em hífen; confirmado em 23/11/2026).
+export const LINKEDIN_URL = 'https://www.linkedin.com/in/fabiano-souza-';
 
 export const UNSUBSCRIBE_LINE = 'Para não receber mais e-mails meus, responda "parar".';
 
@@ -63,7 +75,7 @@ const TEMPLATES: Record<CadencePersona, Record<number, string>> = {
       '{nome}, sou o Fabiano Souza, conselheiro e consultor de indústrias de médio porte no PR e em SP.\n\n' +
       'Nas indústrias que acompanho, é comum o dono aprovar compra e pagamento um a um. Não por desconfiança: ele não enxerga o que já está comprometido no mês.\n\n' +
       'Na {empresa}, isso ainda passa por você?\n\n' +
-      `${SIGNATURE}\n\n` +
+      `${SIGNATURE_MARK}\n\n` +
       UNSUBSCRIBE_LINE,
     3:
       '{nome}, um exemplo concreto.\n\n' +
@@ -77,7 +89,7 @@ const TEMPLATES: Record<CadencePersona, Record<number, string>> = {
       '{nome}, sou o Fabiano Souza, conselheiro e consultor de indústrias de médio porte no PR e em SP.\n\n' +
       'O ponto em que mais vejo diretoria decidindo com número velho é o fechamento do mês.\n\n' +
       'Hoje a {empresa} fecha em que dia útil?\n\n' +
-      `${SIGNATURE}\n\n` +
+      `${SIGNATURE_MARK}\n\n` +
       UNSUBSCRIBE_LINE,
     3:
       '{nome}, um exemplo concreto.\n\n' +
@@ -138,14 +150,45 @@ export function cadenceTema(persona: CadencePersona, vars: Vars): string {
   return render('{tema}', persona, vars);
 }
 
-/** Renderiza o e-mail aprovado para a persona + step. null se não houver template. */
+function escapeHtml(s: string): string {
+  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+const SIGNATURE_IMG_HTML =
+  `<img src="${SIGNATURE_IMAGE_URL}" width="450" height="225" alt="${escapeHtml(SIGNATURE_IMAGE_ALT)}" ` +
+  'style="display:block;width:450px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none">' +
+  `<div style="margin:6px 0 0;font-size:12px"><a href="${LINKEDIN_URL}" style="color:#17699A">linkedin.com/in/fabiano-souza-</a></div>`;
+
+/**
+ * Parte HTML do e-mail: o mesmo texto aprovado, em parágrafos simples (cara de e-mail
+ * escrito à mão, sem layout), com o cartão de assinatura do Fabiano. No D0 o cartão
+ * entra no lugar da assinatura em texto; no D7 e no D14 vem depois do "Fabiano".
+ */
+function toHtml(text: string): string {
+  const hasMark = text.includes(SIGNATURE_MARK);
+  const blocks = text.split('\n\n').map((block) => {
+    if (block === SIGNATURE_MARK) return `<div style="margin:0 0 14px">${SIGNATURE_IMG_HTML}</div>`;
+    const style = block === UNSUBSCRIBE_LINE ? 'margin:0 0 14px;color:#666666;font-size:12px' : 'margin:0 0 14px';
+    return `<p style="${style}">${escapeHtml(block).replaceAll('\n', '<br>')}</p>`;
+  });
+  if (!hasMark) blocks.push(`<div style="margin:0 0 14px">${SIGNATURE_IMG_HTML}</div>`);
+  return '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222222">' +
+    blocks.join('') + '</div>';
+}
+
+/** Renderiza o e-mail aprovado para a persona + step (texto puro e HTML). null se não houver template. */
 export function renderCadenceEmail(
   persona: CadencePersona,
   step: number,
   vars: Vars,
-): { subject: string; body: string } | null {
-  const body = TEMPLATES[persona]?.[step];
-  if (!body) return null;
+): { subject: string; body: string; html: string } | null {
+  const tpl = TEMPLATES[persona]?.[step];
+  if (!tpl) return null;
   const subject = render(SUBJECT[persona], persona, vars);
-  return { subject: step === 1 ? subject : `Re: ${subject}`, body: render(body, persona, vars) };
+  const rendered = render(tpl, persona, vars);
+  return {
+    subject: step === 1 ? subject : `Re: ${subject}`,
+    body: rendered.replace(SIGNATURE_MARK, SIGNATURE),
+    html: toHtml(rendered),
+  };
 }

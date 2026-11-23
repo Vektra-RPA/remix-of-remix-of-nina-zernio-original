@@ -10,6 +10,8 @@ import {
   type CadencePersona,
 } from "../_shared/cadence-templates.ts";
 import { emailMatchesName, isExcludedEmail, isGenericEmail } from "../_shared/exclusions.ts";
+import { TAG_DOUBT, TAG_OUT, TAG_PENDING } from "../_shared/lead-triage.ts";
+import { buildDailyDigest } from "../_shared/daily-digest.ts";
 import { enqueueTemplateForContact, enqueueTemplateWithMessage } from "../_shared/template-dispatch.ts";
 import { authenticateCronRequest } from "../_shared/cron-auth.ts";
 
@@ -220,7 +222,9 @@ function notEligible(contact: Contact): boolean {
     || isExcludedEmail(contact.email) // domínio próprio / cliente ativo
     || isGenericEmail(contact.email)   // contato@, comercial@, sac@...
     || !emailMatchesName(contact.email, contact.name) // e-mail de outra pessoa (caso do lote 1)
-    || emailNotVerified(contact);
+    || emailNotVerified(contact)
+    // Triagem do Apollo (apollo-lead-sync): só entra quem a triagem aprovou.
+    || (contact.tags ?? []).some((t: string) => t === TAG_PENDING || t === TAG_DOUBT || t === TAG_OUT);
 }
 
 async function authenticate(req: Request, supabase: SupabaseClient): Promise<boolean> {
@@ -683,19 +687,33 @@ async function enrollContact(supabase: SupabaseClient, contact: Contact): Promis
 
 /** Matricula automaticamente leads apollo qualificados ainda sem cadência. */
 async function autoEnroll(supabase: SupabaseClient, limit: number): Promise<number> {
-  const { data: candidates } = await supabase
-    .from('contacts')
-    .select('id, email, name, call_name, phone_number, tags, client_memory')
-    .contains('tags', ['apollo'])
-    .not('email', 'is', null)
-    .limit(limit * 3);
+  // Percorre os candidatos em páginas, do mais antigo ao mais novo. Antes eram só os 75
+  // primeiros, sem ordem: os contatos de lotes anteriores (já na cadência, mas ainda com a
+  // tag 'apollo') podiam ocupar a página inteira e o lote novo nunca ser matriculado.
+  const PAGE = 100;
   let enrolled = 0;
-  for (const c of (candidates ?? [])) {
-    if (enrolled >= limit) break;
-    if (notEligible(c)) continue;
-    const { data: existing } = await supabase.from('cadence_state').select('id').eq('contact_id', c.id).limit(1);
-    if (Array.isArray(existing) && existing.length) continue;
-    if (await enrollContact(supabase, c)) enrolled += 1;
+  for (let from = 0; from < 3000 && enrolled < limit; from += PAGE) {
+    const { data: candidates } = await supabase
+      .from('contacts')
+      .select('id, email, name, call_name, phone_number, tags, client_memory')
+      .contains('tags', ['apollo'])
+      .not('email', 'is', null)
+      .order('created_at', { ascending: true })
+      .range(from, from + PAGE - 1);
+    const rows = (candidates ?? []) as Contact[];
+    if (rows.length === 0) break;
+    const eligible = rows.filter((c) => !notEligible(c));
+    if (eligible.length > 0) {
+      const { data: states } = await supabase
+        .from('cadence_state').select('contact_id').in('contact_id', eligible.map((c) => c.id));
+      const inCadence = new Set(((states ?? []) as Array<{ contact_id: string }>).map((s) => s.contact_id));
+      for (const c of eligible) {
+        if (enrolled >= limit) break;
+        if (inCadence.has(c.id)) continue;
+        if (await enrollContact(supabase, c)) enrolled += 1;
+      }
+    }
+    if (rows.length < PAGE) break;
   }
   return enrolled;
 }
@@ -881,7 +899,7 @@ async function runPass(supabase: SupabaseClient): Promise<Record<string, unknown
     const tpl = persona ? renderCadenceEmail(persona, item.step, renderVars(contact)) : null;
     if (!tpl) { await markStep(supabase, item.id, 'skipped', 'sem template/persona'); continue; }
 
-    const res = await sendThreadedEmail(supabase, contact, { subject: tpl.subject, text: tpl.body });
+    const res = await sendThreadedEmail(supabase, contact, { subject: tpl.subject, text: tpl.body, html: tpl.html });
     if (res.rateLimited) {
       await supabase.from('cadence_state').update({ status: 'pending' }).eq('id', item.id); // volta pra fila
       rateLimited = true;
@@ -914,6 +932,21 @@ serve(async (req) => {
   try {
     const body = record(await req.json().catch(() => ({})));
     const action = typeof body.action === 'string' ? body.action : 'run';
+
+    // Resumo diário por e-mail (cron lis-resumo-diario). digest_preview só monta, não envia.
+    if (action === 'digest' || action === 'digest_preview') {
+      const digest = await buildDailyDigest(supabase);
+      if (action === 'digest_preview') return json({ ok: true, ...digest });
+      const to = (Deno.env.get('DIGEST_EMAILS') || '').split(/[,;\s]+/).filter((x) => x.includes('@'));
+      if (to.length === 0) return json({ ok: false, skipped: 'DIGEST_EMAILS não configurado', counts: digest.counts });
+      const resp = await fetch(`${supabaseUrl}/functions/v1/email-send`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ internal: true, to, subject: digest.subject, text: digest.text, html: digest.html }),
+      });
+      const sent = await resp.json().catch(() => ({}));
+      return json({ ok: resp.ok, to: to.length, counts: digest.counts, result: sent }, resp.ok ? 200 : 502);
+    }
 
     if (action === 'enroll') {
       if (typeof body.contactId === 'string' && body.contactId) {
@@ -987,7 +1020,7 @@ serve(async (req) => {
         }
         const tpl = renderCadenceEmail(persona, def.step, renderVars(contact));
         if (!tpl) { results.push({ step: def.step, canal: 'email', sent: false, reason: 'sem template' }); continue; }
-        const res = await sendThreadedEmail(supabase, contact, { subject: tpl.subject, text: tpl.body });
+        const res = await sendThreadedEmail(supabase, contact, { subject: tpl.subject, text: tpl.body, html: tpl.html });
         results.push({ step: def.step, dia: `D${def.offsetDays}`, canal: 'email', subject: tpl.subject, sent: res.ok, error: res.error, messageId: res.rfcMessageId });
         if (!res.ok) break; // não manda o resto fora de ordem
       }

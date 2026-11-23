@@ -75,6 +75,8 @@ export interface UnifiedLeadInput {
   apolloPersonId?: string | null;
   /** Origem do lead: 'apollo' | 'inbound_form' | 'inbound_wa' | 'manual'. */
   origin?: string;
+  /** Tags extras só para contato NOVO (ex.: triagem_pendente — nasce fora da cadência). */
+  newContactTags?: string[];
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -213,7 +215,7 @@ export async function upsertUnifiedContact(
       phone_number: phone,
       name: input.fullName ?? null,
       call_name: input.firstName ?? null,
-      tags: baseTags,
+      tags: Array.from(new Set([...baseTags, ...(input.newContactTags ?? [])])),
       notes: input.companyName ? `Lead ${origin} — ${input.companyName}` : `Lead ${origin}`,
       client_memory: { lead_state: leadStateSeed, apollo: apolloMeta },
     })
